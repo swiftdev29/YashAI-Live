@@ -23,6 +23,7 @@ export const useGeminiLive = () => {
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const audioOutputRef = useRef<HTMLAudioElement | null>(null);
   
   // Video References
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -203,6 +204,17 @@ export const useGeminiLive = () => {
       try { source.stop(); } catch (e) { /* ignore */ }
     });
     sourcesRef.current.clear();
+    
+    // Clean up Audio Output Element (Speaker Fix)
+    if (audioOutputRef.current) {
+      audioOutputRef.current.pause();
+      audioOutputRef.current.srcObject = null;
+      // Remove from DOM if appended
+      if (audioOutputRef.current.parentNode) {
+        audioOutputRef.current.parentNode.removeChild(audioOutputRef.current);
+      }
+      audioOutputRef.current = null;
+    }
 
     if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
@@ -258,18 +270,17 @@ export const useGeminiLive = () => {
       
       try {
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        // Input Context (16kHz for Speech)
         inputCtx = new AudioContextClass({ sampleRate: 16000 });
-        outputCtx = new AudioContextClass({ sampleRate: 24000 });
+        // Output Context (24kHz for Playback)
+        // latencyHint 'playback' tells the browser we prefer continuous playback (speaker)
+        // over low-latency interactive (which often defaults to earpiece).
+        outputCtx = new AudioContextClass({ sampleRate: 24000, latencyHint: 'playback' });
       } catch (e) {
         setError("Could not initialize audio system.");
         setConnectionState(ConnectionState.ERROR);
         return;
       }
-
-      try {
-        if (inputCtx.state === 'suspended') await inputCtx.resume();
-        if (outputCtx.state === 'suspended') await outputCtx.resume();
-      } catch (e) {}
       
       inputAudioContextRef.current = inputCtx;
       outputAudioContextRef.current = outputCtx;
@@ -285,10 +296,25 @@ export const useGeminiLive = () => {
       outputAnalyserRef.current = outputAnalyser;
       
       const volumeGainNode = outputCtx.createGain();
-      volumeGainNode.gain.value = 2; 
+      volumeGainNode.gain.value = 1.0; 
+      
+      // SPEAKER FIX:
+      // 1. Connect output to a MediaStreamDestination (not hardware directly)
+      const audioDestination = outputCtx.createMediaStreamDestination();
       volumeGainNode.connect(outputAnalyser);
-      outputAnalyser.connect(outputCtx.destination);
-
+      outputAnalyser.connect(audioDestination);
+      
+      // 2. Play this stream via an HTML Audio Element
+      const audioEl = new Audio();
+      audioEl.srcObject = audioDestination.stream;
+      audioEl.autoplay = true;
+      (audioEl as any).playsInline = true;
+      audioEl.volume = 1;
+      // 3. Attach to DOM (hidden) to ensure mobile browsers treat it as a primary media source
+      audioEl.style.display = 'none';
+      document.body.appendChild(audioEl);
+      audioOutputRef.current = audioEl;
+      
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({ 
@@ -304,6 +330,16 @@ export const useGeminiLive = () => {
         setError("Microphone access denied.");
         setConnectionState(ConnectionState.ERROR);
         return;
+      }
+
+      // 4. Resume contexts and start playback AFTER mic is acquired
+      // This prevents the OS from switching back to "Call/Earpiece" mode after we requested "Media" mode.
+      try {
+        if (inputCtx.state === 'suspended') await inputCtx.resume();
+        if (outputCtx.state === 'suspended') await outputCtx.resume();
+        await audioEl.play();
+      } catch (e) {
+        console.debug("Audio play failed", e);
       }
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -340,11 +376,9 @@ export const useGeminiLive = () => {
               currentVolumeRef.current = rms;
 
               // Local VAD Logic
-              // Threshold can be adjusted. 0.02 is decent for spoken voice vs background noise.
               const VAD_THRESHOLD = 0.02;
               
               if (rms > VAD_THRESHOLD) {
-                // User is speaking
                 if (silenceTimerRef.current) {
                     clearTimeout(silenceTimerRef.current);
                     silenceTimerRef.current = null;
@@ -353,17 +387,15 @@ export const useGeminiLive = () => {
                 if (!isUserSpeakingRef.current) {
                   isUserSpeakingRef.current = true;
                   setIsUserSpeaking(true);
-                  // If user interrupts, we assume AI should stop (visually at least)
                   setIsAiSpeaking(false); 
                 }
               } else {
-                // Potential silence
                 if (isUserSpeakingRef.current && !silenceTimerRef.current) {
                   silenceTimerRef.current = setTimeout(() => {
                     isUserSpeakingRef.current = false;
                     setIsUserSpeaking(false);
                     silenceTimerRef.current = null;
-                  }, 500); // 500ms debounce for silence detection
+                  }, 500); 
                 }
               }
 
@@ -377,11 +409,17 @@ export const useGeminiLive = () => {
               }
             };
 
+            // SPEAKER FIX:
+            // Route input script processor to a Void Destination (MediaStreamDestination)
+            // instead of hardware destination (inputCtx.destination).
+            // This ensures the input context doesn't try to engage the hardware output,
+            // which can confuse the OS routing.
+            const voidDestination = inputCtx.createMediaStreamDestination();
             const muteNode = inputCtx.createGain();
             muteNode.gain.value = 0;
             source.connect(scriptProcessor);
             scriptProcessor.connect(muteNode);
-            muteNode.connect(inputCtx.destination);
+            muteNode.connect(voidDestination);
           },
           onmessage: async (message: LiveServerMessage) => {
              if (currentSessionIdRef.current !== sessionId) return;
