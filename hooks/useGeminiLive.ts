@@ -273,9 +273,9 @@ export const useGeminiLive = () => {
         // Input Context (16kHz for Speech)
         inputCtx = new AudioContextClass({ sampleRate: 16000 });
         // Output Context (24kHz for Playback)
-        // latencyHint 'playback' tells the browser we prefer continuous playback (speaker)
-        // over low-latency interactive (which often defaults to earpiece).
-        outputCtx = new AudioContextClass({ sampleRate: 24000, latencyHint: 'playback' });
+        // Switch back to 'interactive' for lowest latency. 
+        // The Speaker fix relies on the DOM attachment and MediaStreamDestination, not the 'playback' hint.
+        outputCtx = new AudioContextClass({ sampleRate: 24000, latencyHint: 'interactive' });
       } catch (e) {
         setError("Could not initialize audio system.");
         setConnectionState(ConnectionState.ERROR);
