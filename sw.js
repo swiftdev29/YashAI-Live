@@ -1,12 +1,13 @@
-const CACHE_NAME = 'yashai-v5';
+const CACHE_NAME = 'yashai-v1';
 
-// Only cache the absolute essentials.
+// Add the files you want to cache immediately
 const PRECACHE_URLS = [
   '/',
   '/index.html',
-  '/manifest.json'
-  // Note: We don't hardcode icon names here anymore to allow for flexible filenames,
-  // they will be cached at runtime when requested.
+  '/index.tsx',
+  '/App.tsx',
+  '/types.ts',
+  '/metadata.json'
 ];
 
 self.addEventListener('install', (event) => {
@@ -34,9 +35,11 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
+  // Skip cross-origin requests that aren't modules we want to cache (like esm.sh)
+  // and skip API calls to Google GenAI
   const url = new URL(event.request.url);
   
-  // Don't cache API calls
+  // Don't cache the API calls (WebSocket/HTTP for GenAI)
   if (url.hostname.includes('googleapis') || url.hostname.includes('google.com')) {
     return;
   }
@@ -48,14 +51,16 @@ self.addEventListener('fetch', (event) => {
       }
 
       return fetch(event.request).then((response) => {
+        // Check if we received a valid response
         if (!response || response.status !== 200 || response.type !== 'basic' && response.type !== 'cors') {
           return response;
         }
 
+        // Clone the response
         const responseToCache = response.clone();
 
         caches.open(CACHE_NAME).then((cache) => {
-          // Runtime Caching: Cache local files and valid CDNs
+          // Cache requests to our origin and esm.sh
           if (url.origin === self.location.origin || url.hostname === 'esm.sh' || url.hostname === 'cdn.tailwindcss.com') {
              cache.put(event.request, responseToCache);
           }
@@ -63,8 +68,6 @@ self.addEventListener('fetch', (event) => {
 
         return response;
       });
-    }).catch(() => {
-      // Offline fallback could go here
     })
   );
 });
