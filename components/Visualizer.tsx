@@ -130,5 +130,5 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
     };
   }, [analyser, isActive, color]);
 
-  return <canvas ref={canvasRef} className="w-full h-full block" />;
+  return <canvas ref={canvasRef} className="w-full h-full block transform-gpu" />;
 };

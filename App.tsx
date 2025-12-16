@@ -34,10 +34,13 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-[#0A0A0A] text-white font-sans flex flex-col relative overflow-hidden selection:bg-blue-500/30">
       
-      {/* Dynamic Background */}
-      <div className="absolute inset-0 pointer-events-none">
-        <div className={`absolute top-[-20%] left-[-10%] w-[60%] h-[60%] rounded-full bg-blue-900/10 blur-[150px] transition-all duration-1000 ${connectionState === ConnectionState.CONNECTED ? 'opacity-100 scale-110' : 'opacity-40 scale-100'}`} />
-        <div className={`absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] rounded-full bg-indigo-900/10 blur-[150px] transition-all duration-1000 ${connectionState === ConnectionState.CONNECTED ? 'opacity-100 scale-110' : 'opacity-40 scale-100'}`} />
+      {/* Dynamic Background 
+          OPTIMIZATION: Added 'transform-gpu' (translate3d) and 'will-change' to force 
+          GPU composition layer. This fixes lag on iOS Safari caused by large blurs.
+      */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden">
+        <div className={`absolute top-[-20%] left-[-10%] w-[60%] h-[60%] rounded-full bg-blue-900/10 blur-[150px] transition-all duration-1000 ease-in-out transform-gpu will-change-[transform,opacity] ${connectionState === ConnectionState.CONNECTED ? 'opacity-100 scale-110' : 'opacity-40 scale-100'}`} />
+        <div className={`absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] rounded-full bg-indigo-900/10 blur-[150px] transition-all duration-1000 ease-in-out transform-gpu will-change-[transform,opacity] ${connectionState === ConnectionState.CONNECTED ? 'opacity-100 scale-110' : 'opacity-40 scale-100'}`} />
       </div>
 
       <header className="absolute top-0 w-full p-6 z-20 flex justify-between items-center opacity-80">
@@ -110,7 +113,7 @@ const App: React.FC = () => {
                 onClick={handleToggleConnect}
                 disabled={connectionState === ConnectionState.CONNECTING}
                 className={`
-                  group relative flex items-center gap-3 px-8 py-4 rounded-full transition-all duration-300 backdrop-blur-md
+                  group relative flex items-center gap-3 px-8 py-4 rounded-full transition-all duration-300 backdrop-blur-md transform-gpu
                   ${connectionState === ConnectionState.CONNECTED 
                     ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30' 
                     : 'bg-white/5 hover:bg-white/10 text-white border border-white/10 hover:border-white/20 shadow-xl shadow-indigo-500/5'}
@@ -138,7 +141,7 @@ const App: React.FC = () => {
             key={groundingMetadata.groundingChunks[0]?.web?.uri || Date.now()}
             className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-2xl px-4 z-30"
           >
-              <div className="bg-slate-900/80 backdrop-blur-md border border-slate-800 rounded-xl p-4 shadow-2xl animate-slide-up">
+              <div className="bg-slate-900/80 backdrop-blur-md border border-slate-800 rounded-xl p-4 shadow-2xl animate-slide-up transform-gpu">
                   <div className="flex items-center gap-2 mb-3 text-xs font-semibold text-indigo-400 uppercase tracking-wider">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
                       Sources
