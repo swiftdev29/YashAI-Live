@@ -1,0 +1,7 @@
+{
+  "name": "YashAI Voice Assistant",
+  "description": "A real-time voice assistant powered by YashAI.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
