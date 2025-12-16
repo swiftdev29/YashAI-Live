@@ -7,6 +7,7 @@ export const useGeminiLive = () => {
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
   const [error, setError] = useState<string | null>(null);
   const [groundingMetadata, setGroundingMetadata] = useState<GroundingMetadata | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
   
   // Audio Contexts and Nodes
   const inputAudioContextRef = useRef<AudioContext | null>(null);
@@ -78,6 +79,16 @@ export const useGeminiLive = () => {
     nextStartTimeRef.current = 0;
     sessionPromiseRef.current = null;
     setGroundingMetadata(null);
+    setIsMuted(false);
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getAudioTracks().forEach(track => {
+        track.enabled = !track.enabled;
+      });
+      setIsMuted(prev => !prev);
+    }
   }, []);
 
   const connect = useCallback(async () => {
@@ -92,6 +103,7 @@ export const useGeminiLive = () => {
       setConnectionState(ConnectionState.CONNECTING);
       setError(null);
       setGroundingMetadata(null);
+      setIsMuted(false);
 
       // 1. Setup Audio Contexts
       // Input: 16kHz for Gemini compatibility
@@ -312,6 +324,8 @@ export const useGeminiLive = () => {
     error,
     groundingMetadata,
     outputAnalyser: outputAnalyserRef.current,
-    inputAnalyser: inputAnalyserRef.current
+    inputAnalyser: inputAnalyserRef.current,
+    isMuted,
+    toggleMute
   };
 };

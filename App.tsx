@@ -11,7 +11,9 @@ const App: React.FC = () => {
     error,
     groundingMetadata,
     inputAnalyser,
-    outputAnalyser
+    outputAnalyser,
+    isMuted,
+    toggleMute
   } = useGeminiLive();
 
   const handleToggleConnect = () => {
@@ -65,14 +67,31 @@ const App: React.FC = () => {
             </div>
         </div>
 
-        {/* User Input Visualizer */}
+        {/* User Input Visualizer & Mute Control */}
         <div className={`relative flex flex-col items-center gap-2 transition-all duration-500 ${connectionState === ConnectionState.CONNECTED ? 'opacity-100 translate-y-0 h-24' : 'opacity-0 translate-y-4 h-0 overflow-hidden'}`}>
-            <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold">Microphone</div>
+            <div className="flex items-center gap-3">
+                <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold">Microphone</div>
+                <button 
+                  onClick={toggleMute}
+                  className={`p-2 rounded-full transition-all duration-200 ${isMuted ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'}`}
+                  title={isMuted ? "Unmute Microphone" : "Mute Microphone"}
+                >
+                  {isMuted ? (
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3zm-9 8l10-10" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                    </svg>
+                  )}
+                </button>
+            </div>
             <div className="w-16 h-16 relative">
                  <Visualizer 
                     analyser={inputAnalyser} 
-                    isActive={connectionState === ConnectionState.CONNECTED}
-                    color="#10b981"
+                    isActive={connectionState === ConnectionState.CONNECTED && !isMuted}
+                    color={isMuted ? '#ef4444' : '#10b981'}
                 />
             </div>
         </div>
