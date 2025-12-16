@@ -314,7 +314,7 @@ export const useGeminiLive = () => {
       outputAnalyserRef.current = outputAnalyser;
       
       const volumeGainNode = outputCtx.createGain();
-      volumeGainNode.gain.value = 1.5;
+      volumeGainNode.gain.value = 2;
       volumeGainNode.connect(outputAnalyser);
       outputAnalyser.connect(outputCtx.destination);
 
