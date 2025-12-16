@@ -1,4 +1,4 @@
-import { Blob } from '@google/genai';
+import { Blob as GenAIBlob } from '@google/genai';
 
 export function base64ToBytes(base64: string): Uint8Array {
   const binaryString = atob(base64);
@@ -44,7 +44,7 @@ export async function decodeAudioData(
   return buffer;
 }
 
-export function createPcmBlob(data: Float32Array): Blob {
+export function createPcmBlob(data: Float32Array): GenAIBlob {
   const l = data.length;
   const int16 = new Int16Array(l);
   for (let i = 0; i < l; i++) {
@@ -54,4 +54,17 @@ export function createPcmBlob(data: Float32Array): Blob {
     data: bytesToBase64(new Uint8Array(int16.buffer)),
     mimeType: 'audio/pcm;rate=16000',
   };
+}
+
+export function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      const base64 = result.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }

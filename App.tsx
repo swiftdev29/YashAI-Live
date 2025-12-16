@@ -18,7 +18,10 @@ const MainApp: React.FC = () => {
     inputAnalyser,
     outputAnalyser,
     isMuted,
-    toggleMute
+    toggleMute,
+    videoRef,
+    isVideoActive,
+    toggleVideo
   } = useGeminiLive();
 
   const handleToggleConnect = () => {
@@ -57,47 +60,88 @@ const MainApp: React.FC = () => {
 
       <main className="flex-1 flex flex-col items-center justify-center relative z-10 w-full max-w-4xl mx-auto px-4 gap-4">
         
-        {/* Main Visualizer Area (Output) */}
+        {/* Main Visualizer Area (Output) & Video Feed */}
         <div className="relative w-full max-w-[400px] aspect-square flex items-center justify-center">
+            
             {/* Connection Status Indicator Ring */}
             <div className={`absolute inset-0 rounded-full border border-slate-800 transition-all duration-700 ${connectionState === ConnectionState.CONNECTED ? 'scale-100 opacity-100' : 'scale-75 opacity-0'}`}></div>
             <div className={`absolute inset-12 rounded-full border border-slate-800/50 transition-all duration-700 delay-100 ${connectionState === ConnectionState.CONNECTED ? 'scale-100 opacity-100' : 'scale-75 opacity-0'}`}></div>
 
-            <div className="w-full h-full relative z-10">
+            {/* Video Feed Layer */}
+            <div className={`absolute inset-4 rounded-3xl overflow-hidden z-0 transition-all duration-500 ${isVideoActive ? 'opacity-100 scale-100' : 'opacity-0 scale-90'}`}>
+                <video 
+                    ref={videoRef} 
+                    autoPlay 
+                    playsInline 
+                    muted 
+                    className="w-full h-full object-cover opacity-80"
+                />
+            </div>
+
+            {/* Visualizer Layer */}
+            <div className="w-full h-full relative z-10 pointer-events-none">
                 <Visualizer 
                   analyser={outputAnalyser} 
                   isActive={connectionState === ConnectionState.CONNECTED}
-                  color="#6366f1"
+                  color={isVideoActive ? "#818cf8" : "#6366f1"}
                 />
             </div>
         </div>
 
-        {/* User Input Visualizer & Mute Control */}
+        {/* User Input Controls */}
         <div className={`relative flex flex-col items-center gap-2 transition-all duration-500 ${connectionState === ConnectionState.CONNECTED ? 'opacity-100 translate-y-0 h-24' : 'opacity-0 translate-y-4 h-0 overflow-hidden'}`}>
-            <div className="flex items-center gap-3">
-                <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold">Microphone</div>
-                <button 
-                  onClick={toggleMute}
-                  className={`p-2 rounded-full transition-all duration-200 ${isMuted ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'}`}
-                  title={isMuted ? "Unmute Microphone" : "Mute Microphone"}
-                >
-                  {isMuted ? (
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3zm-9 8l10-10" />
-                    </svg>
-                  ) : (
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                    </svg>
-                  )}
-                </button>
+            
+            <div className="flex items-center gap-4">
+                {/* Mute Button */}
+                <div className="flex flex-col items-center gap-1">
+                    <button 
+                      onClick={toggleMute}
+                      className={`p-3 rounded-full transition-all duration-200 ${isMuted ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'}`}
+                      title={isMuted ? "Unmute Microphone" : "Mute Microphone"}
+                    >
+                      {isMuted ? (
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3zm-9 8l10-10" />
+                        </svg>
+                      ) : (
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                        </svg>
+                      )}
+                    </button>
+                    <span className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Mic</span>
+                </div>
+
+                {/* Camera Button */}
+                <div className="flex flex-col items-center gap-1">
+                    <button 
+                      onClick={toggleVideo}
+                      className={`p-3 rounded-full transition-all duration-200 ${isVideoActive ? 'bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30' : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white'}`}
+                      title={isVideoActive ? "Turn Off Camera" : "Turn On Camera"}
+                    >
+                      {isVideoActive ? (
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                      ) : (
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3l18 18" />
+                        </svg>
+                      )}
+                    </button>
+                    <span className="text-[9px] uppercase tracking-widest text-slate-600 font-semibold">Cam</span>
+                </div>
             </div>
-            <div className="w-16 h-16 relative">
-                 <Visualizer 
-                    analyser={inputAnalyser} 
-                    isActive={connectionState === ConnectionState.CONNECTED && !isMuted}
-                    color={isMuted ? '#ef4444' : '#10b981'}
-                />
+
+            <div className="w-full h-8 flex justify-center mt-1">
+                 <div className="w-12 h-12 relative">
+                    <Visualizer 
+                        analyser={inputAnalyser} 
+                        isActive={connectionState === ConnectionState.CONNECTED && !isMuted}
+                        color={isMuted ? '#ef4444' : '#10b981'}
+                    />
+                 </div>
             </div>
         </div>
 

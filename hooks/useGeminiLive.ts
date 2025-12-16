@@ -1,13 +1,14 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { ConnectionState, GroundingMetadata } from '../types';
-import { createPcmBlob, base64ToBytes, decodeAudioData } from '../utils/audio-utils';
+import { createPcmBlob, base64ToBytes, decodeAudioData, blobToBase64 } from '../utils/audio-utils';
 
 export const useGeminiLive = () => {
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
   const [error, setError] = useState<string | null>(null);
   const [groundingMetadata, setGroundingMetadata] = useState<GroundingMetadata | null>(null);
   const [isMuted, setIsMuted] = useState(false);
+  const [isVideoActive, setIsVideoActive] = useState(false);
   
   // Audio Contexts and Nodes
   const inputAudioContextRef = useRef<AudioContext | null>(null);
@@ -18,15 +19,38 @@ export const useGeminiLive = () => {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   
+  // Video References
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoStreamRef = useRef<MediaStream | null>(null);
+  const videoIntervalRef = useRef<number | null>(null);
+
   // Session Management
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const currentSessionIdRef = useRef<string>('');
   const groundingTimeoutRef = useRef<any>(null);
 
+  const stopVideo = useCallback(() => {
+    if (videoIntervalRef.current) {
+      clearInterval(videoIntervalRef.current);
+      videoIntervalRef.current = null;
+    }
+    if (videoStreamRef.current) {
+      videoStreamRef.current.getTracks().forEach(track => track.stop());
+      videoStreamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setIsVideoActive(false);
+  }, []);
+
   const disconnect = useCallback(async () => {
     const sessionId = currentSessionIdRef.current;
     console.log(`[${sessionId}] Disconnecting...`);
+
+    // Stop Video first
+    stopVideo();
 
     // Stop Microphone Stream
     if (mediaStreamRef.current) {
@@ -80,7 +104,7 @@ export const useGeminiLive = () => {
     sessionPromiseRef.current = null;
     setGroundingMetadata(null);
     setIsMuted(false);
-  }, []);
+  }, [stopVideo]);
 
   const toggleMute = useCallback(() => {
     if (mediaStreamRef.current) {
@@ -90,6 +114,81 @@ export const useGeminiLive = () => {
       setIsMuted(prev => !prev);
     }
   }, []);
+
+  const startVideo = useCallback(async () => {
+    if (isVideoActive) return;
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          width: { ideal: 640 }, 
+          height: { ideal: 480 },
+          facingMode: "user" 
+        } 
+      });
+      
+      videoStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      
+      setIsVideoActive(true);
+
+      // Setup Frame Capture Loop
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const JPEG_QUALITY = 0.5;
+
+      // 2 FPS (500ms interval) to balance bandwidth and responsiveness
+      videoIntervalRef.current = window.setInterval(async () => {
+        if (!ctx || !videoRef.current || !sessionPromiseRef.current) return;
+        
+        // Ensure we only process if connected
+        if (connectionState !== ConnectionState.CONNECTED) return;
+
+        canvas.width = videoRef.current.videoWidth;
+        canvas.height = videoRef.current.videoHeight;
+        ctx.drawImage(videoRef.current, 0, 0);
+
+        canvas.toBlob(async (blob) => {
+          if (blob) {
+            try {
+              const base64Data = await blobToBase64(blob);
+              sessionPromiseRef.current?.then(session => {
+                try {
+                    session.sendRealtimeInput({
+                      media: {
+                        mimeType: 'image/jpeg',
+                        data: base64Data
+                      }
+                    });
+                } catch(e) {
+                    console.debug("Frame send error", e);
+                }
+              });
+            } catch (e) {
+               console.debug("Blob conversion error", e);
+            }
+          }
+        }, 'image/jpeg', JPEG_QUALITY);
+
+      }, 500);
+
+    } catch (e) {
+      console.error("Failed to start video", e);
+      setError("Could not access camera.");
+    }
+  }, [connectionState, isVideoActive, error]);
+
+  const toggleVideo = useCallback(() => {
+    if (isVideoActive) {
+      stopVideo();
+    } else {
+      startVideo();
+    }
+  }, [isVideoActive, startVideo, stopVideo]);
+
 
   const connect = useCallback(async () => {
     const sessionId = Math.random().toString(36).substring(7);
@@ -179,7 +278,6 @@ export const useGeminiLive = () => {
             
             // ScriptProcessor for PCM
             // LATENCY OPTIMIZATION: Buffer size reduced to 1024 (approx 64ms at 16kHz)
-            // This sends data to the model twice as fast as the previous 2048 setting.
             const scriptProcessor = inputCtx.createScriptProcessor(1024, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
 
@@ -324,6 +422,9 @@ export const useGeminiLive = () => {
     outputAnalyser: outputAnalyserRef.current,
     inputAnalyser: inputAnalyserRef.current,
     isMuted,
-    toggleMute
+    toggleMute,
+    videoRef,
+    isVideoActive,
+    toggleVideo
   };
 };
