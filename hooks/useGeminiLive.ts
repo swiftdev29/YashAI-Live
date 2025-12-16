@@ -23,6 +23,10 @@ export const useGeminiLive = () => {
   // Video References
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoStreamRef = useRef<MediaStream | null>(null);
+  const videoCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  
+  // State Refs for Logic
+  const currentVolumeRef = useRef<number>(0);
   
   // Session Management
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
@@ -79,61 +83,83 @@ export const useGeminiLive = () => {
     }
   }, [connectionState, isVideoActive, stopVideo, facingMode]);
 
-  // Video Streaming Loop
-  // This replaces the previous setInterval to ensure we never queue frames.
-  // We only schedule the next frame AFTER the current one has been sent.
+  // Video Streaming Loop - VAD Triggered
+  // We use requestAnimationFrame for a smooth loop, but throttle actual sending based on:
+  // 1. Network readiness (don't queue if busy)
+  // 2. User Activity (send FAST if speaking, SLOW if silent)
   useEffect(() => {
     let isMounted = true;
-    let timeoutId: any;
+    let animationFrameId: number;
+    let isSending = false;
+    let lastSendTime = 0;
 
     const captureAndSendFrame = async () => {
-        if (!isMounted || !isVideoActive || connectionState !== ConnectionState.CONNECTED || !videoRef.current || !sessionPromiseRef.current) {
-            return;
-        }
+        if (!isMounted) return;
 
-        try {
-            const video = videoRef.current;
-            if (video.videoWidth > 0 && video.videoHeight > 0) {
-                const canvas = document.createElement('canvas');
-                const ctx = canvas.getContext('2d');
-                if (ctx) {
-                    // Downscale to 360p max for speed/latency optimization
-                    const MAX_WIDTH = 360; 
-                    const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
-                    canvas.width = video.videoWidth * scale;
-                    canvas.height = video.videoHeight * scale;
+        // Conditions to run: Video is active, Connected, Refs exist
+        if (isVideoActive && connectionState === ConnectionState.CONNECTED && videoRef.current && sessionPromiseRef.current) {
+            
+            const now = Date.now();
+            
+            // DYNAMIC FRAMERATE STRATEGY
+            // If Volume > 0.01 (User speaking), interval is 120ms (~8 FPS).
+            // If Volume < 0.01 (User silent), interval is 3000ms (~0.3 FPS) just to keep context alive.
+            // This ensures that when the user starts asking "What is this?", we are blasting fresh frames.
+            const isTalking = currentVolumeRef.current > 0.01;
+            const targetInterval = isTalking ? 120 : 3000;
 
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            // Only send if enough time passed AND we aren't currently sending (prevent queue buildup)
+            if (!isSending && (now - lastSendTime > targetInterval)) {
+                isSending = true;
 
-                    const base64 = await new Promise<string | null>((resolve) => {
-                         canvas.toBlob((blob) => {
-                             if (blob) {
-                                 blobToBase64(blob).then(resolve).catch(() => resolve(null));
-                             } else {
-                                 resolve(null);
-                             }
-                         }, 'image/jpeg', 0.5); // Low quality for speed
-                    });
+                try {
+                    const video = videoRef.current;
+                    if (video.videoWidth > 0 && video.videoHeight > 0) {
+                        // Reuse canvas
+                        if (!videoCanvasRef.current) {
+                            videoCanvasRef.current = document.createElement('canvas');
+                        }
+                        const canvas = videoCanvasRef.current;
+                        const ctx = canvas.getContext('2d');
 
-                    if (base64) {
-                        const session = await sessionPromiseRef.current;
-                        await session.sendRealtimeInput({
-                            media: { mimeType: 'image/jpeg', data: base64 }
-                        });
+                        if (ctx) {
+                            // Aggressive optimization: 320px width is enough for LLM vision usually
+                            const MAX_WIDTH = 320; 
+                            const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
+                            canvas.width = video.videoWidth * scale;
+                            canvas.height = video.videoHeight * scale;
+
+                            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                            // Convert to low-quality JPEG for speed
+                            const base64 = await new Promise<string | null>((resolve) => {
+                                canvas.toBlob((blob) => {
+                                    if (blob) {
+                                        blobToBase64(blob).then(resolve).catch(() => resolve(null));
+                                    } else {
+                                        resolve(null);
+                                    }
+                                }, 'image/jpeg', 0.4); // 40% quality
+                            });
+
+                            if (base64) {
+                                const session = await sessionPromiseRef.current;
+                                await session.sendRealtimeInput({
+                                    media: { mimeType: 'image/jpeg', data: base64 }
+                                });
+                                lastSendTime = Date.now();
+                            }
+                        }
                     }
+                } catch (e) {
+                    console.debug("Frame drop/error", e);
+                } finally {
+                    isSending = false;
                 }
             }
-        } catch (e) {
-            console.debug("Frame capture/send error:", e);
         }
 
-        // Schedule next frame only if still active
-        if (isMounted && isVideoActive && connectionState === ConnectionState.CONNECTED) {
-            // 600ms delay ~ 1.5 FPS. 
-            // This ensures the buffer is cleared before we try to send again.
-            // This fixes the "lag" where the model sees old frames.
-            timeoutId = setTimeout(captureAndSendFrame, 600);
-        }
+        animationFrameId = requestAnimationFrame(captureAndSendFrame);
     };
 
     if (isVideoActive && connectionState === ConnectionState.CONNECTED) {
@@ -142,7 +168,7 @@ export const useGeminiLive = () => {
 
     return () => {
         isMounted = false;
-        clearTimeout(timeoutId);
+        cancelAnimationFrame(animationFrameId);
     };
   }, [isVideoActive, connectionState]);
 
@@ -311,6 +337,15 @@ export const useGeminiLive = () => {
               if (currentSessionIdRef.current !== sessionId) return;
 
               const inputData = e.inputBuffer.getChannelData(0);
+              
+              // Calculate RMS Volume for Video Triggering
+              let sum = 0;
+              for (let i = 0; i < inputData.length; i++) {
+                sum += inputData[i] * inputData[i];
+              }
+              const rms = Math.sqrt(sum / inputData.length);
+              currentVolumeRef.current = rms;
+
               const pcmBlob = createPcmBlob(inputData);
               
               sessionPromise.then(session => {
