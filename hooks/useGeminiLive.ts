@@ -314,7 +314,7 @@ export const useGeminiLive = () => {
       outputAnalyserRef.current = outputAnalyser;
       
       const volumeGainNode = outputCtx.createGain();
-      volumeGainNode.gain.value = 2.5;
+      volumeGainNode.gain.value = 1.5;
       volumeGainNode.connect(outputAnalyser);
       outputAnalyser.connect(outputCtx.destination);
 
@@ -403,7 +403,7 @@ export const useGeminiLive = () => {
                setGroundingMetadata(grounding);
                groundingTimeoutRef.current = setTimeout(() => {
                  setGroundingMetadata(null);
-               }, 3000);
+               }, 6000);
              }
 
             const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
