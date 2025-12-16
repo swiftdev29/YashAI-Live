@@ -8,7 +8,7 @@
   "orientation": "portrait",
   "icons": [
     {
-      "src": "https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg",
+      "src": "https://raw.githubusercontent.com/swiftdev29/Jee-mains-checker/refs/heads/main/icon-512.svg",
       "sizes": "any",
       "type": "image/svg+xml"
     }
