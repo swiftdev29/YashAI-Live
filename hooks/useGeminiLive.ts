@@ -296,23 +296,39 @@ export const useGeminiLive = () => {
       outputAnalyser.smoothingTimeConstant = 0.8;
       outputAnalyserRef.current = outputAnalyser;
       
-      const volumeGainNode = outputCtx.createGain();
-      volumeGainNode.gain.value = 1.0; 
-      volumeGainNodeRef.current = volumeGainNode;
+      // --- Output Audio Chain Setup ---
       
-      // SPEAKER FIX:
-      // 1. Connect output to a MediaStreamDestination (not hardware directly)
+      // 1. Gain Node (Volume/Ducking)
+      const volumeGainNode = outputCtx.createGain();
+      // BOOST: Initial value set to 3.5 (350% volume) to overcome weak Android output
+      // The subsequent CompressorNode will prevent this from clipping on loud devices.
+      volumeGainNode.gain.value = 3.5; 
+      volumeGainNodeRef.current = volumeGainNode;
+
+      // 2. Dynamics Compressor (Safety Limiter)
+      // This allows us to use high gain for quiet devices without blowing out speakers on loud devices.
+      const compressor = outputCtx.createDynamicsCompressor();
+      compressor.threshold.value = -15; // Start compressing early
+      compressor.knee.value = 30;       // Soft knee for natural sound
+      compressor.ratio.value = 12;      // High compression ratio (limiting)
+      compressor.attack.value = 0.003;  // Fast attack to catch spikes
+      compressor.release.value = 0.25;  
+      
+      // 3. Media Destination (for <audio> tag)
       const audioDestination = outputCtx.createMediaStreamDestination();
-      volumeGainNode.connect(outputAnalyser);
+      
+      // Connect Chain: Source(s) -> VolumeGain -> Compressor -> Analyser -> Destination
+      volumeGainNode.connect(compressor);
+      compressor.connect(outputAnalyser);
       outputAnalyser.connect(audioDestination);
       
-      // 2. Play this stream via an HTML Audio Element
+      // 4. HTML Audio Element (Speaker Fix)
       const audioEl = new Audio();
       audioEl.srcObject = audioDestination.stream;
       audioEl.autoplay = true;
-      (audioEl as any).playsInline = true;
-      audioEl.volume = 1;
-      // 3. Attach to DOM (hidden) to ensure mobile browsers treat it as a primary media source
+      (audioEl as any).playsInline = true; 
+      audioEl.muted = false; // Explicitly unmute
+      audioEl.volume = 1.0;
       audioEl.style.display = 'none';
       document.body.appendChild(audioEl);
       audioOutputRef.current = audioEl;
@@ -321,7 +337,7 @@ export const useGeminiLive = () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ 
           audio: {
-            echoCancellation: true, // Essential
+            echoCancellation: true, 
             noiseSuppression: true,
             autoGainControl: true,
             channelCount: 1
@@ -338,7 +354,11 @@ export const useGeminiLive = () => {
       try {
         if (inputCtx.state === 'suspended') await inputCtx.resume();
         if (outputCtx.state === 'suspended') await outputCtx.resume();
-        await audioEl.play();
+        // Force play interaction for Android
+        const p = audioEl.play();
+        if (p !== undefined) {
+            p.catch(e => console.log("Playback start error (benign if handled):", e));
+        }
       } catch (e) {
         console.debug("Audio play failed", e);
       }
@@ -360,12 +380,9 @@ export const useGeminiLive = () => {
             const source = inputCtx.createMediaStreamSource(stream);
             
             // --- Input Gain Stage ---
-            // Boost microphone input by 1.5x to improve recognition and interruption detection
             const inputGain = inputCtx.createGain();
             inputGain.gain.value = 1.5;
             source.connect(inputGain);
-            
-            // Connect Gain to Analyser (Visualizer sees boosted audio)
             inputGain.connect(inputAnalyser);
             
             const scriptProcessor = inputCtx.createScriptProcessor(512, 1, 1);
@@ -376,7 +393,6 @@ export const useGeminiLive = () => {
 
               const inputData = e.inputBuffer.getChannelData(0);
               
-              // Calculate RMS for VAD
               let sum = 0;
               for (let i = 0; i < inputData.length; i++) {
                 sum += inputData[i] * inputData[i];
@@ -385,28 +401,18 @@ export const useGeminiLive = () => {
               currentVolumeRef.current = rms;
 
               // --- ADAPTIVE VAD & INTERRUPTION LOGIC ---
-              
-              // 1. Determine Threshold
-              // If AI is speaking, use a much higher threshold to prevent "Self-Interruption" (Echo)
               const aiIsTalking = sourcesRef.current.size > 0;
-              
-              const BASE_THRESHOLD = 0.012;     // Silence floor
-              // Slightly lowered barge-in threshold (0.035 -> 0.03) combined with 1.5x gain makes it much more responsive
+              const BASE_THRESHOLD = 0.012;     
               const BARGE_IN_THRESHOLD = 0.03; 
-              
               const activeThreshold = aiIsTalking ? BARGE_IN_THRESHOLD : BASE_THRESHOLD;
               
               if (rms > activeThreshold) {
-                // User is speaking (or loud echo)
                 speechAccumulatorRef.current += 1;
                 
-                // 2. Optimistic Interruption (Ducking)
-                // If AI is speaking AND user has spoken consistently for ~3 frames (approx 100ms)
                 if (aiIsTalking && speechAccumulatorRef.current > 2) {
-                    // Local Ducking: Lower the volume immediately to let user hear themselves
                     if (volumeGainNodeRef.current) {
-                        // Quick fade out to 10% volume, don't mute completely so user knows connection is alive
-                        volumeGainNodeRef.current.gain.setTargetAtTime(0.1, outputCtx.currentTime, 0.05);
+                        // Ducking: drop to 10% of the BOOSTED volume (3.5 * 0.1 = 0.35)
+                        volumeGainNodeRef.current.gain.setTargetAtTime(0.35, outputCtx.currentTime, 0.05);
                     }
                 }
 
@@ -421,7 +427,6 @@ export const useGeminiLive = () => {
                   setIsAiSpeaking(false); 
                 }
 
-                // 3. Send Audio
                 if (activeSessionRef.current) {
                     const pcmBlob = createPcmBlob(inputData);
                     try {
@@ -432,7 +437,6 @@ export const useGeminiLive = () => {
                 }
                 
               } else {
-                // Silence (or low volume echo)
                 speechAccumulatorRef.current = 0;
 
                 if (isUserSpeakingRef.current && !silenceTimerRef.current) {
@@ -441,22 +445,15 @@ export const useGeminiLive = () => {
                     setIsUserSpeaking(false);
                     silenceTimerRef.current = null;
                     
-                    // Restore volume if we ducked it
                     if (volumeGainNodeRef.current) {
-                         volumeGainNodeRef.current.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.2);
+                         // Restore to full BOOSTED volume (3.5)
+                         volumeGainNodeRef.current.gain.setTargetAtTime(3.5, outputCtx.currentTime, 0.2);
                     }
 
                   }, 500); 
                 }
                 
-                // 4. Echo Gating
-                // If AI is speaking and volume is low, DO NOT SEND audio.
-                // This filters out the residual echo that AEC missed.
                 if (!aiIsTalking && activeSessionRef.current) {
-                    // Only send silence frames if AI is NOT talking.
-                    // If AI is talking, sending silence is better than sending echo, 
-                    // but sending nothing is most bandwidth efficient.
-                    // Here we continue to send if AI is NOT talking to catch soft starts.
                     const pcmBlob = createPcmBlob(inputData);
                     try {
                          activeSessionRef.current.sendRealtimeInput({ media: pcmBlob });
@@ -468,7 +465,6 @@ export const useGeminiLive = () => {
             const voidDestination = inputCtx.createMediaStreamDestination();
             const muteNode = inputCtx.createGain();
             muteNode.gain.value = 0;
-            // Connect GainNode to ScriptProcessor
             inputGain.connect(scriptProcessor);
             scriptProcessor.connect(muteNode);
             muteNode.connect(voidDestination);
@@ -485,10 +481,10 @@ export const useGeminiLive = () => {
                nextStartTimeRef.current = 0;
                setIsAiSpeaking(false);
                
-               // Restore volume immediately on server confirmation
                if (volumeGainNodeRef.current && outputAudioContextRef.current) {
                   volumeGainNodeRef.current.gain.cancelScheduledValues(outputAudioContextRef.current.currentTime);
-                  volumeGainNodeRef.current.gain.value = 1.0;
+                  // Restore to full BOOSTED volume (3.5)
+                  volumeGainNodeRef.current.gain.value = 3.5;
                }
              }
 
@@ -519,11 +515,11 @@ export const useGeminiLive = () => {
 
                const source = ctx.createBufferSource();
                source.buffer = audioBuffer;
+               // Connect sources to the Gain Node (which is now part of the chain)
                source.connect(volumeGainNode);
 
                source.addEventListener('ended', () => {
                  sourcesRef.current.delete(source);
-                 // Check if this was the last source
                  if (sourcesRef.current.size === 0) {
                      if (aiSpeakingTimerRef.current) clearTimeout(aiSpeakingTimerRef.current);
                      aiSpeakingTimerRef.current = setTimeout(() => {
