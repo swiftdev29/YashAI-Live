@@ -9,6 +9,7 @@ export const useGeminiLive = () => {
   const [groundingMetadata, setGroundingMetadata] = useState<GroundingMetadata | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoActive, setIsVideoActive] = useState(false);
+  const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   
   // Audio Contexts and Nodes
   const inputAudioContextRef = useRef<AudioContext | null>(null);
@@ -44,6 +45,107 @@ export const useGeminiLive = () => {
     }
     setIsVideoActive(false);
   }, []);
+
+  const startVideo = useCallback(async (mode: "user" | "environment" = facingMode) => {
+    // If already active and requesting same mode, do nothing
+    // If active and requesting different mode, we need to restart
+    if (isVideoActive && videoStreamRef.current) {
+       const currentTrack = videoStreamRef.current.getVideoTracks()[0];
+       const currentMode = currentTrack.getSettings().facingMode;
+       if (currentMode === mode) return; // Already running this mode
+       
+       // Stop existing for switch
+       stopVideo(); 
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: mode,
+          width: { ideal: 640 }, 
+          height: { ideal: 480 }
+        } 
+      });
+      
+      videoStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      
+      setIsVideoActive(true);
+
+      // Setup Frame Capture Loop
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      // OPTIMIZATION: Increased from 0.5 to 0.8 for better visual accuracy
+      const JPEG_QUALITY = 0.8; 
+
+      // OPTIMIZATION: Increased frame rate. 330ms ~= 3 FPS.
+      // 500ms (2 FPS) felt too laggy. 330ms is a good balance for "live" feel vs bandwidth.
+      videoIntervalRef.current = window.setInterval(async () => {
+        if (!ctx || !videoRef.current || !sessionPromiseRef.current) return;
+        
+        // Ensure we only process if connected
+        if (connectionState !== ConnectionState.CONNECTED) return;
+
+        canvas.width = videoRef.current.videoWidth;
+        canvas.height = videoRef.current.videoHeight;
+        ctx.drawImage(videoRef.current, 0, 0);
+
+        canvas.toBlob(async (blob) => {
+          if (blob) {
+            try {
+              const base64Data = await blobToBase64(blob);
+              sessionPromiseRef.current?.then(session => {
+                try {
+                    session.sendRealtimeInput({
+                      media: {
+                        mimeType: 'image/jpeg',
+                        data: base64Data
+                      }
+                    });
+                } catch(e) {
+                    console.debug("Frame send error", e);
+                }
+              });
+            } catch (e) {
+               console.debug("Blob conversion error", e);
+            }
+          }
+        }, 'image/jpeg', JPEG_QUALITY);
+
+      }, 330);
+
+    } catch (e) {
+      console.error("Failed to start video", e);
+      // Fallback: If environment camera fails, try user camera
+      if (mode === 'environment') {
+        console.warn("Falling back to user camera");
+        startVideo('user');
+      } else {
+         setError("Could not access camera.");
+      }
+    }
+  }, [connectionState, isVideoActive, stopVideo, facingMode]);
+
+  const toggleVideo = useCallback(() => {
+    if (isVideoActive) {
+      stopVideo();
+    } else {
+      startVideo(facingMode);
+    }
+  }, [isVideoActive, startVideo, stopVideo, facingMode]);
+
+  const switchCamera = useCallback(() => {
+    const newMode = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(newMode);
+    // Restart video with new mode if it's currently active
+    if (isVideoActive) {
+        startVideo(newMode);
+    }
+  }, [facingMode, isVideoActive, startVideo]);
+
 
   const disconnect = useCallback(async () => {
     const sessionId = currentSessionIdRef.current;
@@ -114,81 +216,6 @@ export const useGeminiLive = () => {
       setIsMuted(prev => !prev);
     }
   }, []);
-
-  const startVideo = useCallback(async () => {
-    if (isVideoActive) return;
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          width: { ideal: 640 }, 
-          height: { ideal: 480 },
-          facingMode: "user" 
-        } 
-      });
-      
-      videoStreamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
-      
-      setIsVideoActive(true);
-
-      // Setup Frame Capture Loop
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      const JPEG_QUALITY = 0.5;
-
-      // 2 FPS (500ms interval) to balance bandwidth and responsiveness
-      videoIntervalRef.current = window.setInterval(async () => {
-        if (!ctx || !videoRef.current || !sessionPromiseRef.current) return;
-        
-        // Ensure we only process if connected
-        if (connectionState !== ConnectionState.CONNECTED) return;
-
-        canvas.width = videoRef.current.videoWidth;
-        canvas.height = videoRef.current.videoHeight;
-        ctx.drawImage(videoRef.current, 0, 0);
-
-        canvas.toBlob(async (blob) => {
-          if (blob) {
-            try {
-              const base64Data = await blobToBase64(blob);
-              sessionPromiseRef.current?.then(session => {
-                try {
-                    session.sendRealtimeInput({
-                      media: {
-                        mimeType: 'image/jpeg',
-                        data: base64Data
-                      }
-                    });
-                } catch(e) {
-                    console.debug("Frame send error", e);
-                }
-              });
-            } catch (e) {
-               console.debug("Blob conversion error", e);
-            }
-          }
-        }, 'image/jpeg', JPEG_QUALITY);
-
-      }, 500);
-
-    } catch (e) {
-      console.error("Failed to start video", e);
-      setError("Could not access camera.");
-    }
-  }, [connectionState, isVideoActive, error]);
-
-  const toggleVideo = useCallback(() => {
-    if (isVideoActive) {
-      stopVideo();
-    } else {
-      startVideo();
-    }
-  }, [isVideoActive, startVideo, stopVideo]);
-
 
   const connect = useCallback(async () => {
     const sessionId = Math.random().toString(36).substring(7);
@@ -425,6 +452,7 @@ export const useGeminiLive = () => {
     toggleMute,
     videoRef,
     isVideoActive,
-    toggleVideo
+    toggleVideo,
+    switchCamera
   };
 };
