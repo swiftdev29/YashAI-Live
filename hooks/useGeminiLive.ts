@@ -11,6 +11,10 @@ export const useGeminiLive = () => {
   const [isVideoActive, setIsVideoActive] = useState(false);
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   
+  // Interaction States
+  const [isUserSpeaking, setIsUserSpeaking] = useState(false);
+  const [isAiSpeaking, setIsAiSpeaking] = useState(false);
+
   // Audio Contexts and Nodes
   const inputAudioContextRef = useRef<AudioContext | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
@@ -30,22 +34,24 @@ export const useGeminiLive = () => {
   const isVideoActiveRef = useRef<boolean>(false);
   
   // Session Management
-  const sessionPromiseRef = useRef<Promise<any> | null>(null);
+  const activeSessionRef = useRef<any>(null); 
   const nextStartTimeRef = useRef<number>(0);
   const currentSessionIdRef = useRef<string>('');
   const groundingTimeoutRef = useRef<any>(null);
+  
+  // VAD Refs
+  const silenceTimerRef = useRef<any>(null);
+  const isUserSpeakingRef = useRef(false);
+  const aiSpeakingTimerRef = useRef<any>(null);
 
-  // Keep the ref in sync with state for use in callbacks/loops
   useEffect(() => {
     isVideoActiveRef.current = isVideoActive;
   }, [isVideoActive]);
 
   const stopVideo = useCallback(() => {
-    // 1. Immediately flag as inactive to stop loop logic
     setIsVideoActive(false);
     isVideoActiveRef.current = false;
     
-    // 2. Stop actual streams
     if (videoStreamRef.current) {
       videoStreamRef.current.getTracks().forEach(track => track.stop());
       videoStreamRef.current = null;
@@ -53,8 +59,6 @@ export const useGeminiLive = () => {
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
-    
-    // 3. Reset logic triggers
     currentVolumeRef.current = 0;
   }, []);
 
@@ -63,7 +67,6 @@ export const useGeminiLive = () => {
        const currentTrack = videoStreamRef.current.getVideoTracks()[0];
        const currentMode = currentTrack.getSettings().facingMode;
        if (currentMode === mode || (!currentMode && mode === 'user')) return; 
-       
        stopVideo(); 
     }
 
@@ -72,7 +75,8 @@ export const useGeminiLive = () => {
         video: { 
           facingMode: mode,
           width: { ideal: 640 }, 
-          height: { ideal: 480 }
+          height: { ideal: 480 },
+          frameRate: { ideal: 15, max: 24 }
         } 
       });
       
@@ -86,7 +90,6 @@ export const useGeminiLive = () => {
     } catch (e) {
       console.error("Failed to start video", e);
       if (mode === 'environment') {
-        console.warn("Falling back to user camera");
         setFacingMode('user');
         startVideo('user');
       } else {
@@ -96,28 +99,25 @@ export const useGeminiLive = () => {
     }
   }, [connectionState, isVideoActive, stopVideo, facingMode]);
 
-  // Video Streaming Loop - VAD Triggered
+  // Video Streaming Loop
   useEffect(() => {
     let isMounted = true;
     let animationFrameId: number;
-    let isSending = false;
     let lastSendTime = 0;
 
-    const captureAndSendFrame = async () => {
+    const captureAndSendFrame = () => {
         if (!isMounted) return;
 
-        // Strict Check: Must be active, connected, and have refs
-        if (isVideoActiveRef.current && connectionState === ConnectionState.CONNECTED && videoRef.current && sessionPromiseRef.current) {
+        if (isVideoActiveRef.current && 
+            connectionState === ConnectionState.CONNECTED && 
+            videoRef.current && 
+            activeSessionRef.current) {
             
             const now = Date.now();
-            
-            // DYNAMIC FRAMERATE STRATEGY
             const isTalking = currentVolumeRef.current > 0.01;
-            const targetInterval = isTalking ? 120 : 3000;
+            const targetInterval = isTalking ? 200 : 2000;
 
-            if (!isSending && (now - lastSendTime > targetInterval)) {
-                isSending = true;
-
+            if (now - lastSendTime > targetInterval) {
                 try {
                     const video = videoRef.current;
                     if (video.videoWidth > 0 && video.videoHeight > 0) {
@@ -125,7 +125,7 @@ export const useGeminiLive = () => {
                             videoCanvasRef.current = document.createElement('canvas');
                         }
                         const canvas = videoCanvasRef.current;
-                        const ctx = canvas.getContext('2d');
+                        const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
                         if (ctx) {
                             const MAX_WIDTH = 320; 
@@ -135,38 +135,19 @@ export const useGeminiLive = () => {
 
                             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                            // Check active state again before expensive encoding
-                            if (!isVideoActiveRef.current) {
-                                isSending = false;
-                                return;
-                            }
+                            const base64Data = canvas.toDataURL('image/jpeg', 0.5);
+                            const base64Content = base64Data.split(',')[1];
 
-                            const base64 = await new Promise<string | null>((resolve) => {
-                                canvas.toBlob((blob) => {
-                                    if (blob) {
-                                        blobToBase64(blob).then(resolve).catch(() => resolve(null));
-                                    } else {
-                                        resolve(null);
-                                    }
-                                }, 'image/jpeg', 0.4); 
-                            });
-
-                            // CRITICAL: Check active state one last time before sending.
-                            // This prevents a frame from being queued if the user stopped video 
-                            // while the promise was resolving.
-                            if (base64 && isVideoActiveRef.current) {
-                                const session = await sessionPromiseRef.current;
-                                await session.sendRealtimeInput({
-                                    media: { mimeType: 'image/jpeg', data: base64 }
+                            if (base64Content && isVideoActiveRef.current) {
+                                activeSessionRef.current.sendRealtimeInput({
+                                    media: { mimeType: 'image/jpeg', data: base64Content }
                                 });
-                                lastSendTime = Date.now();
+                                lastSendTime = now;
                             }
                         }
                     }
                 } catch (e) {
-                    console.debug("Frame drop/error", e);
-                } finally {
-                    isSending = false;
+                    console.debug("Frame error", e);
                 }
             }
         }
@@ -223,37 +204,27 @@ export const useGeminiLive = () => {
     });
     sourcesRef.current.clear();
 
-    if (groundingTimeoutRef.current) {
-      clearTimeout(groundingTimeoutRef.current);
-      groundingTimeoutRef.current = null;
-    }
+    if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    if (aiSpeakingTimerRef.current) clearTimeout(aiSpeakingTimerRef.current);
 
     if (inputAudioContextRef.current) {
-      try {
-        if (inputAudioContextRef.current.state !== 'closed') {
-           await inputAudioContextRef.current.close();
-        }
-      } catch (e) {
-        console.warn("Input context close error", e);
-      }
+      try { if (inputAudioContextRef.current.state !== 'closed') await inputAudioContextRef.current.close(); } catch (e) {}
       inputAudioContextRef.current = null;
     }
     if (outputAudioContextRef.current) {
-      try {
-        if (outputAudioContextRef.current.state !== 'closed') {
-          await outputAudioContextRef.current.close();
-        }
-      } catch (e) {
-        console.warn("Output context close error", e);
-      }
+      try { if (outputAudioContextRef.current.state !== 'closed') await outputAudioContextRef.current.close(); } catch (e) {}
       outputAudioContextRef.current = null;
     }
 
     setConnectionState(ConnectionState.DISCONNECTED);
     nextStartTimeRef.current = 0;
-    sessionPromiseRef.current = null;
+    activeSessionRef.current = null;
     setGroundingMetadata(null);
     setIsMuted(false);
+    setIsUserSpeaking(false);
+    setIsAiSpeaking(false);
+    isUserSpeakingRef.current = false;
     currentVolumeRef.current = 0;
   }, [stopVideo]);
 
@@ -278,6 +249,9 @@ export const useGeminiLive = () => {
       setError(null);
       setGroundingMetadata(null);
       setIsMuted(false);
+      setIsUserSpeaking(false);
+      setIsAiSpeaking(false);
+      isUserSpeakingRef.current = false;
 
       let inputCtx: AudioContext;
       let outputCtx: AudioContext;
@@ -287,7 +261,6 @@ export const useGeminiLive = () => {
         inputCtx = new AudioContextClass({ sampleRate: 16000 });
         outputCtx = new AudioContextClass({ sampleRate: 24000 });
       } catch (e) {
-        console.error("AudioContext creation failed", e);
         setError("Could not initialize audio system.");
         setConnectionState(ConnectionState.ERROR);
         return;
@@ -296,9 +269,7 @@ export const useGeminiLive = () => {
       try {
         if (inputCtx.state === 'suspended') await inputCtx.resume();
         if (outputCtx.state === 'suspended') await outputCtx.resume();
-      } catch (e) {
-         console.warn("Context resume failed", e);
-      }
+      } catch (e) {}
       
       inputAudioContextRef.current = inputCtx;
       outputAudioContextRef.current = outputCtx;
@@ -314,16 +285,22 @@ export const useGeminiLive = () => {
       outputAnalyserRef.current = outputAnalyser;
       
       const volumeGainNode = outputCtx.createGain();
-      volumeGainNode.gain.value = 2;
+      volumeGainNode.gain.value = 2; 
       volumeGainNode.connect(outputAnalyser);
       outputAnalyser.connect(outputCtx.destination);
 
       let stream: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1
+          } 
+        });
         mediaStreamRef.current = stream;
       } catch (e) {
-        console.error("Microphone access failed", e);
         setError("Microphone access denied.");
         setConnectionState(ConnectionState.ERROR);
         return;
@@ -338,12 +315,15 @@ export const useGeminiLive = () => {
              console.log(`[${sessionId}] Session opened`);
              if (currentSessionIdRef.current !== sessionId) return;
 
-             setConnectionState(ConnectionState.CONNECTED);
+             sessionPromise.then(session => {
+                activeSessionRef.current = session;
+                setConnectionState(ConnectionState.CONNECTED);
+             });
             
             const source = inputCtx.createMediaStreamSource(stream);
             source.connect(inputAnalyser);
             
-            const scriptProcessor = inputCtx.createScriptProcessor(1024, 1, 1);
+            const scriptProcessor = inputCtx.createScriptProcessor(512, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
 
             scriptProcessor.onaudioprocess = (e) => {
@@ -351,28 +331,50 @@ export const useGeminiLive = () => {
 
               const inputData = e.inputBuffer.getChannelData(0);
               
-              if (isVideoActiveRef.current) {
-                let sum = 0;
-                for (let i = 0; i < inputData.length; i++) {
-                  sum += inputData[i] * inputData[i];
+              // Calculate RMS for VAD
+              let sum = 0;
+              for (let i = 0; i < inputData.length; i++) {
+                sum += inputData[i] * inputData[i];
+              }
+              const rms = Math.sqrt(sum / inputData.length);
+              currentVolumeRef.current = rms;
+
+              // Local VAD Logic
+              // Threshold can be adjusted. 0.02 is decent for spoken voice vs background noise.
+              const VAD_THRESHOLD = 0.02;
+              
+              if (rms > VAD_THRESHOLD) {
+                // User is speaking
+                if (silenceTimerRef.current) {
+                    clearTimeout(silenceTimerRef.current);
+                    silenceTimerRef.current = null;
                 }
-                const rms = Math.sqrt(sum / inputData.length);
-                currentVolumeRef.current = rms;
+                
+                if (!isUserSpeakingRef.current) {
+                  isUserSpeakingRef.current = true;
+                  setIsUserSpeaking(true);
+                  // If user interrupts, we assume AI should stop (visually at least)
+                  setIsAiSpeaking(false); 
+                }
+              } else {
+                // Potential silence
+                if (isUserSpeakingRef.current && !silenceTimerRef.current) {
+                  silenceTimerRef.current = setTimeout(() => {
+                    isUserSpeakingRef.current = false;
+                    setIsUserSpeaking(false);
+                    silenceTimerRef.current = null;
+                  }, 500); // 500ms debounce for silence detection
+                }
               }
 
-              const pcmBlob = createPcmBlob(inputData);
-              
-              sessionPromise.then(session => {
-                if (currentSessionIdRef.current === sessionId) {
+              if (activeSessionRef.current) {
+                  const pcmBlob = createPcmBlob(inputData);
                   try {
-                    session.sendRealtimeInput({ media: pcmBlob });
+                    activeSessionRef.current.sendRealtimeInput({ media: pcmBlob });
                   } catch (e) {
                      console.debug("Send failed", e);
                   }
-                }
-              }).catch(e => {
-                // Ignore errors
-              });
+              }
             };
 
             const muteNode = inputCtx.createGain();
@@ -387,19 +389,18 @@ export const useGeminiLive = () => {
              const interrupted = message.serverContent?.interrupted;
              if (interrupted) {
                sourcesRef.current.forEach(source => {
-                 try { source.stop(); } catch (e) { /* ignore */ }
+                 try { source.stop(); } catch (e) {}
                });
                sourcesRef.current.clear();
                nextStartTimeRef.current = 0;
+               setIsAiSpeaking(false);
              }
 
              const grounding = (message.serverContent?.modelTurn as any)?.groundingMetadata || 
                                (message.serverContent as any)?.groundingMetadata;
              
              if (grounding) {
-               if (groundingTimeoutRef.current) {
-                 clearTimeout(groundingTimeoutRef.current);
-               }
+               if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
                setGroundingMetadata(grounding);
                groundingTimeoutRef.current = setTimeout(() => {
                  setGroundingMetadata(null);
@@ -426,11 +427,21 @@ export const useGeminiLive = () => {
 
                source.addEventListener('ended', () => {
                  sourcesRef.current.delete(source);
+                 // Check if this was the last source
+                 if (sourcesRef.current.size === 0) {
+                     if (aiSpeakingTimerRef.current) clearTimeout(aiSpeakingTimerRef.current);
+                     aiSpeakingTimerRef.current = setTimeout(() => {
+                         if (sourcesRef.current.size === 0) {
+                             setIsAiSpeaking(false);
+                         }
+                     }, 200);
+                 }
                });
 
                source.start(nextStartTimeRef.current);
                nextStartTimeRef.current += audioBuffer.duration;
                sourcesRef.current.add(source);
+               setIsAiSpeaking(true);
             }
           },
           onerror: (e) => {
@@ -460,8 +471,6 @@ export const useGeminiLive = () => {
         }
       });
       
-      sessionPromiseRef.current = sessionPromise;
-
       sessionPromise.catch(err => {
         console.error(`[${sessionId}] Connection promise failed:`, err);
         if (currentSessionIdRef.current === sessionId) {
@@ -491,13 +500,15 @@ export const useGeminiLive = () => {
     connectionState,
     error,
     groundingMetadata,
-    outputAnalyser: outputAnalyserRef.current,
     inputAnalyser: inputAnalyserRef.current,
+    outputAnalyser: outputAnalyserRef.current,
     isMuted,
     toggleMute,
     videoRef,
     isVideoActive,
     toggleVideo,
-    switchCamera
+    switchCamera,
+    isUserSpeaking,
+    isAiSpeaking
   };
 };
