@@ -136,12 +136,14 @@ export const useGeminiLive = () => {
       // 2. Setup Analysers and Gain
       const inputAnalyser = inputCtx.createAnalyser();
       inputAnalyser.fftSize = 256;
-      inputAnalyser.smoothingTimeConstant = 0.5; // Smoother visualization
+      inputAnalyser.smoothingTimeConstant = 0.5;
       inputAnalyserRef.current = inputAnalyser;
 
       const outputAnalyser = outputCtx.createAnalyser();
       outputAnalyser.fftSize = 256;
-      outputAnalyser.smoothingTimeConstant = 0.5;
+      // Visualization Optimization: Increased smoothing from 0.5 to 0.8
+      // This makes the animation less jittery and appear smoother on all devices.
+      outputAnalyser.smoothingTimeConstant = 0.8;
       outputAnalyserRef.current = outputAnalyser;
       
       // Volume Boost: Create a gain node to increase the output volume
@@ -295,7 +297,7 @@ export const useGeminiLive = () => {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } }
           },
-          systemInstruction: "You are a friendly, humorous voice assistant called *Yash AI*. You have been completely developed from scratch by proficient developer Yash Sinha, who has trained you using YashAI Max, an LLM model. Maintain a conversational tone like a human. You can laugh, breathe, go fast or slow whenever necessary. Converse with the user in your default American accent in English unless the user speaks in another language.",
+          systemInstruction: "You are a friendly, humorous voice assistant called *Yash AI*. You have been completely developed from scratch by proficient developer Yash Sinha, who h",
           thinkingConfig: { thinkingBudget: 0 },
           tools: [{ googleSearch: {} }] // Enable Google Search Grounding
         }
