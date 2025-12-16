@@ -1,12 +1,12 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
-import { ConnectionState } from '../types';
+import { ConnectionState, GroundingMetadata } from '../types';
 import { createPcmBlob, base64ToBytes, decodeAudioData } from '../utils/audio-utils';
 
 export const useGeminiLive = () => {
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
   const [error, setError] = useState<string | null>(null);
-  const [isVolumeSilent, setIsVolumeSilent] = useState<boolean>(false);
+  const [groundingMetadata, setGroundingMetadata] = useState<GroundingMetadata | null>(null);
   
   // Audio Contexts and Nodes
   const inputAudioContextRef = useRef<AudioContext | null>(null);
@@ -21,6 +21,7 @@ export const useGeminiLive = () => {
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const currentSessionIdRef = useRef<string>('');
+  const groundingTimeoutRef = useRef<any>(null);
 
   const disconnect = useCallback(async () => {
     const sessionId = currentSessionIdRef.current;
@@ -44,6 +45,12 @@ export const useGeminiLive = () => {
       try { source.stop(); } catch (e) { /* ignore */ }
     });
     sourcesRef.current.clear();
+
+    // Clear Grounding Timeout
+    if (groundingTimeoutRef.current) {
+      clearTimeout(groundingTimeoutRef.current);
+      groundingTimeoutRef.current = null;
+    }
 
     // Close Audio Contexts
     if (inputAudioContextRef.current) {
@@ -70,7 +77,7 @@ export const useGeminiLive = () => {
     setConnectionState(ConnectionState.DISCONNECTED);
     nextStartTimeRef.current = 0;
     sessionPromiseRef.current = null;
-    setIsVolumeSilent(false);
+    setGroundingMetadata(null);
   }, []);
 
   const connect = useCallback(async () => {
@@ -84,6 +91,7 @@ export const useGeminiLive = () => {
       
       setConnectionState(ConnectionState.CONNECTING);
       setError(null);
+      setGroundingMetadata(null);
 
       // 1. Setup Audio Contexts
       // Input: 16kHz for Gemini compatibility
@@ -116,10 +124,12 @@ export const useGeminiLive = () => {
       // 2. Setup Analysers
       const inputAnalyser = inputCtx.createAnalyser();
       inputAnalyser.fftSize = 256;
+      inputAnalyser.smoothingTimeConstant = 0.5; // Smoother visualization
       inputAnalyserRef.current = inputAnalyser;
 
       const outputAnalyser = outputCtx.createAnalyser();
       outputAnalyser.fftSize = 256;
+      outputAnalyser.smoothingTimeConstant = 0.5;
       outputAnalyserRef.current = outputAnalyser;
 
       // 3. Get Microphone Access
@@ -152,7 +162,6 @@ export const useGeminiLive = () => {
             source.connect(inputAnalyser);
             
             // ScriptProcessor for PCM
-            // Note: In a production app, AudioWorklet is preferred, but ScriptProcessor is easier for single file
             const scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
 
@@ -163,7 +172,6 @@ export const useGeminiLive = () => {
               const pcmBlob = createPcmBlob(inputData);
               
               sessionPromise.then(session => {
-                // Check if we are still connected before sending
                 if (currentSessionIdRef.current === sessionId) {
                   try {
                     session.sendRealtimeInput({ media: pcmBlob });
@@ -172,7 +180,7 @@ export const useGeminiLive = () => {
                   }
                 }
               }).catch(e => {
-                // Ignore errors from the promise if the session failed
+                // Ignore errors
               });
             };
 
@@ -193,6 +201,25 @@ export const useGeminiLive = () => {
                });
                sourcesRef.current.clear();
                nextStartTimeRef.current = 0;
+             }
+
+             // Handle Grounding Metadata
+             const grounding = (message.serverContent?.modelTurn as any)?.groundingMetadata || 
+                               (message.serverContent as any)?.groundingMetadata;
+             
+             if (grounding) {
+               // Clear existing timer if any
+               if (groundingTimeoutRef.current) {
+                 clearTimeout(groundingTimeoutRef.current);
+               }
+               
+               // Set new metadata
+               setGroundingMetadata(grounding);
+               
+               // Set timer to clear metadata after 3 seconds
+               groundingTimeoutRef.current = setTimeout(() => {
+                 setGroundingMetadata(null);
+               }, 3000);
              }
 
             // Handle Audio Output
@@ -246,8 +273,9 @@ export const useGeminiLive = () => {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } }
           },
-          systemInstruction: "You are a friendly, humorous voice assistant called YashAI. Maintain a conversational tone like a human. You can laugh, breathe, go fast or slow whenever necessary. Converse with the user in your default accent in English unless he speaks in another language.",
+          systemInstruction: "You are a friendly, humorous voice assistant called Yash AI. Maintain a conversational tone like a human. You can laugh, breathe, go fast or slow whenever necessary. Converse with the user in your default American accent in English unless the user speaks in another language.",
           thinkingConfig: { thinkingBudget: 0 },
+          tools: [{ googleSearch: {} }] // Enable Google Search Grounding
         }
       });
       
@@ -282,6 +310,7 @@ export const useGeminiLive = () => {
     disconnect,
     connectionState,
     error,
+    groundingMetadata,
     outputAnalyser: outputAnalyserRef.current,
     inputAnalyser: inputAnalyserRef.current
   };

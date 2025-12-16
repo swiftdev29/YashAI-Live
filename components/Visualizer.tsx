@@ -30,26 +30,29 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
     resizeCanvas();
 
     const render = () => {
-      if (!ctx || !analyser && isActive) {
-        // Just draw a flat line or idle circle if active but no analyser yet
-        // If not active, we clear
-      }
+      if (!ctx) return;
 
       const width = canvas.width;
       const height = canvas.height;
       const centerX = width / 2;
       const centerY = height / 2;
+      // Base radius
       const radius = Math.min(width, height) / 4;
 
       ctx.clearRect(0, 0, width, height);
 
+      // Idle State
       if (!isActive) {
-         // Draw idle state (a small static circle)
          ctx.beginPath();
          ctx.arc(centerX, centerY, radius * 0.5, 0, 2 * Math.PI);
-         ctx.strokeStyle = '#334155';
+         ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
          ctx.lineWidth = 2;
          ctx.stroke();
+
+         ctx.beginPath();
+         ctx.arc(centerX, centerY, radius * 0.1, 0, 2 * Math.PI);
+         ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+         ctx.fill();
          return;
       }
       
@@ -58,50 +61,57 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
         const dataArray = new Uint8Array(bufferLength);
         analyser.getByteFrequencyData(dataArray);
 
-        // Draw Circular Waveform
+        // Calculate average volume for pulse effect
+        const avg = dataArray.reduce((a, b) => a + b, 0) / bufferLength;
+        const pulse = (avg / 255);
+
+        // --- Layer 1: Outer Glow ---
+        const gradient = ctx.createRadialGradient(centerX, centerY, radius * 0.5, centerX, centerY, radius * 2);
+        gradient.addColorStop(0, `${color}20`); // Low opacity hex
+        gradient.addColorStop(1, 'transparent');
+        ctx.fillStyle = gradient;
+        ctx.globalAlpha = 0.3 + (pulse * 0.5);
         ctx.beginPath();
-        // We wrap the frequency data around a circle
-        // FFT size is 256, so bufferLength is 128.
-        // We mirror it to make it look symmetrical (256 points total circle)
-        
+        ctx.arc(centerX, centerY, radius * 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+
+        // --- Layer 2: Frequency Rings ---
+        // We'll draw 2 rings with different sensitivities
+
+        // Ring 1 (Bass/Low Mids)
+        ctx.beginPath();
         for (let i = 0; i < bufferLength; i++) {
+          // Wrap around circle
+          const angle = (Math.PI * 2 * i) / bufferLength;
+          // Scale based on data
           const value = dataArray[i];
-          const percent = value / 255;
-          const heightOffset = radius * percent * 0.8; 
-          const angle = (Math.PI * 2 * i) / bufferLength; 
+          const offset = (value / 255) * (radius * 0.6);
           
-          // Current radius at this angle
-          const r = radius + heightOffset;
-          
+          const r = radius + offset;
           const x = centerX + Math.cos(angle) * r;
           const y = centerY + Math.sin(angle) * r;
 
-          if (i === 0) {
-            ctx.moveTo(x, y);
-          } else {
-            ctx.lineTo(x, y);
-          }
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
         }
-        
-        // Close the path nicely
         ctx.closePath();
         ctx.strokeStyle = color;
-        ctx.lineWidth = 3;
-        ctx.lineCap = 'round';
-        ctx.shadowBlur = 15;
-        ctx.shadowColor = color;
+        ctx.lineWidth = 2;
         ctx.stroke();
 
-        // Inner glow circle
-        const avg = dataArray.reduce((a, b) => a + b, 0) / bufferLength;
-        const pulse = (avg / 255) * 20;
-
+        // Ring 2 (Smoothed Inner Circle)
         ctx.beginPath();
-        ctx.arc(centerX, centerY, radius * 0.8 + pulse, 0, 2 * Math.PI);
+        ctx.arc(centerX, centerY, radius * 0.8 + (pulse * 20), 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // --- Layer 3: Core ---
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius * 0.4 + (pulse * 10), 0, Math.PI * 2);
         ctx.fillStyle = color;
-        ctx.globalAlpha = 0.1 + (avg / 255) * 0.2;
         ctx.fill();
-        ctx.globalAlpha = 1.0;
       }
 
       animationFrameRef.current = requestAnimationFrame(render);

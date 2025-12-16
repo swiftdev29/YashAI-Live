@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useGeminiLive } from './hooks/useGeminiLive';
-import { ConnectionState } from './types';
+import { ConnectionState, GroundingChunk } from './types';
 import { Visualizer } from './components/Visualizer';
 
 const App: React.FC = () => {
@@ -9,11 +9,10 @@ const App: React.FC = () => {
     disconnect, 
     connectionState, 
     error,
+    groundingMetadata,
     inputAnalyser,
     outputAnalyser
   } = useGeminiLive();
-
-  const [isMicMuted, setIsMicMuted] = useState(false);
 
   const handleToggleConnect = () => {
     if (connectionState === ConnectionState.CONNECTED || connectionState === ConnectionState.CONNECTING) {
@@ -23,109 +22,149 @@ const App: React.FC = () => {
     }
   };
 
-  const statusColor = {
-    [ConnectionState.DISCONNECTED]: 'text-slate-400',
-    [ConnectionState.CONNECTING]: 'text-yellow-400',
-    [ConnectionState.CONNECTED]: 'text-emerald-400',
-    [ConnectionState.ERROR]: 'text-red-400',
-  }[connectionState];
-
   const statusText = {
-    [ConnectionState.DISCONNECTED]: 'Ready to Connect',
-    [ConnectionState.CONNECTING]: 'Establishing Uplink...',
-    [ConnectionState.CONNECTED]: 'Live Session Active',
-    [ConnectionState.ERROR]: 'Connection Failed',
+    [ConnectionState.DISCONNECTED]: 'Ready',
+    [ConnectionState.CONNECTING]: 'Connecting...',
+    [ConnectionState.CONNECTED]: 'Listening',
+    [ConnectionState.ERROR]: 'Error',
   }[connectionState];
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center relative overflow-hidden">
+    <div className="min-h-screen bg-[#0A0A0A] text-white font-sans flex flex-col relative overflow-hidden selection:bg-blue-500/30">
       
-      {/* Background Ambience */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] rounded-full bg-blue-600/10 blur-[120px]" />
-        <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] rounded-full bg-purple-600/10 blur-[120px]" />
+      {/* Dynamic Background */}
+      <div className="absolute inset-0 pointer-events-none">
+        <div className={`absolute top-[-20%] left-[-10%] w-[60%] h-[60%] rounded-full bg-blue-900/10 blur-[150px] transition-all duration-1000 ${connectionState === ConnectionState.CONNECTED ? 'opacity-100 scale-110' : 'opacity-40 scale-100'}`} />
+        <div className={`absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] rounded-full bg-indigo-900/10 blur-[150px] transition-all duration-1000 ${connectionState === ConnectionState.CONNECTED ? 'opacity-100 scale-110' : 'opacity-40 scale-100'}`} />
       </div>
 
-      <main className="relative z-10 w-full max-w-2xl px-6 flex flex-col items-center gap-12">
+      <header className="absolute top-0 w-full p-6 z-20 flex justify-between items-center opacity-80">
+        <div className="flex items-center gap-2">
+           <div className="w-3 h-3 rounded-full bg-gradient-to-r from-blue-500 to-indigo-500"></div>
+           <span className="font-semibold tracking-wide text-sm text-slate-300">YashAI</span>
+        </div>
+        <div className="text-xs text-slate-500 font-mono">
+            LIVE NATIVE AUDIO
+        </div>
+      </header>
+
+      <main className="flex-1 flex flex-col items-center justify-center relative z-10 w-full max-w-4xl mx-auto px-4 gap-4">
         
-        {/* Header */}
-        <div className="text-center space-y-2">
-          <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-white">
-            YashAI <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">Live</span>
-          </h1>
-          <p className="text-slate-400 font-medium tracking-wide">
-            NATIVE AUDIO EXPERIENCE
-          </p>
-        </div>
+        {/* Main Visualizer Area (Output) */}
+        <div className="relative w-full max-w-[400px] aspect-square flex items-center justify-center">
+            {/* Connection Status Indicator Ring */}
+            <div className={`absolute inset-0 rounded-full border border-slate-800 transition-all duration-700 ${connectionState === ConnectionState.CONNECTED ? 'scale-100 opacity-100' : 'scale-75 opacity-0'}`}></div>
+            <div className={`absolute inset-12 rounded-full border border-slate-800/50 transition-all duration-700 delay-100 ${connectionState === ConnectionState.CONNECTED ? 'scale-100 opacity-100' : 'scale-75 opacity-0'}`}></div>
 
-        {/* Visualizer Container */}
-        <div className="w-full aspect-square max-w-md relative flex items-center justify-center">
-          
-          {/* Output Visualizer (The AI) - Blue/Purple */}
-          <div className="absolute inset-0 z-10">
-             <Visualizer 
-                analyser={outputAnalyser} 
-                isActive={connectionState === ConnectionState.CONNECTED}
-                color="#818cf8"
-             />
-          </div>
-
-          {/* Input Visualizer (The User) - Subtle overlay or ring? 
-              For simplicity and aesthetics, let's just show the Output when AI talks, 
-              and maybe a smaller indication when User talks. 
-              Actually, merging them onto one canvas or layering them is tricky without distinct separation.
-              Let's create a secondary ring for the user.
-          */}
-          
-        </div>
-
-        {/* Status & Error */}
-        <div className="h-8 flex items-center justify-center">
-          {error ? (
-            <span className="text-red-400 bg-red-900/20 px-4 py-1 rounded-full text-sm font-semibold border border-red-500/20">
-              {error}
-            </span>
-          ) : (
-            <div className={`flex items-center gap-2 ${statusColor} bg-slate-900/50 px-4 py-1.5 rounded-full border border-slate-800`}>
-              <span className={`w-2 h-2 rounded-full ${connectionState === ConnectionState.CONNECTED ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
-              <span className="text-sm font-medium uppercase tracking-wider">{statusText}</span>
+            <div className="w-full h-full relative z-10">
+                <Visualizer 
+                  analyser={outputAnalyser} 
+                  isActive={connectionState === ConnectionState.CONNECTED}
+                  color="#6366f1"
+                />
             </div>
-          )}
         </div>
 
-        {/* Controls */}
-        <div className="flex items-center gap-6">
-          <button
-            onClick={handleToggleConnect}
-            disabled={connectionState === ConnectionState.CONNECTING}
-            className={`
-              relative group flex items-center justify-center w-20 h-20 rounded-full transition-all duration-300
-              ${connectionState === ConnectionState.CONNECTED 
-                ? 'bg-red-500/10 hover:bg-red-500/20 border-red-500 text-red-400' 
-                : 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20'}
-              border-2 ${connectionState === ConnectionState.CONNECTED ? 'border-red-500' : 'border-transparent'}
-            `}
-          >
-             {/* Icon */}
-             {connectionState === ConnectionState.CONNECTED ? (
-               <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-             ) : (
-               <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
-             )}
-             
-             {/* Ring Animation when connecting */}
-             {connectionState === ConnectionState.CONNECTING && (
-               <div className="absolute inset-[-4px] rounded-full border-2 border-blue-400 border-t-transparent animate-spin" />
-             )}
-          </button>
+        {/* User Input Visualizer */}
+        <div className={`relative flex flex-col items-center gap-2 transition-all duration-500 ${connectionState === ConnectionState.CONNECTED ? 'opacity-100 translate-y-0 h-24' : 'opacity-0 translate-y-4 h-0 overflow-hidden'}`}>
+            <div className="text-[10px] uppercase tracking-widest text-slate-600 font-semibold">Microphone</div>
+            <div className="w-16 h-16 relative">
+                 <Visualizer 
+                    analyser={inputAnalyser} 
+                    isActive={connectionState === ConnectionState.CONNECTED}
+                    color="#10b981"
+                />
+            </div>
         </div>
 
-        <p className="text-slate-500 text-xs text-center max-w-xs leading-relaxed">
-          Ensure your volume is up and microphone access is granted.
-          <br />
-          Powered by YashAI.
-        </p>
+        {/* Action Area */}
+        <div className="flex flex-col items-center gap-6 mt-4">
+            
+            {/* Error Banner */}
+            {error && (
+              <div className="bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-2 rounded-lg text-sm backdrop-blur-sm">
+                {error}
+              </div>
+            )}
+
+            <button
+                onClick={handleToggleConnect}
+                disabled={connectionState === ConnectionState.CONNECTING}
+                className={`
+                  group relative flex items-center gap-3 px-8 py-4 rounded-full transition-all duration-300 backdrop-blur-md
+                  ${connectionState === ConnectionState.CONNECTED 
+                    ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30' 
+                    : 'bg-white/5 hover:bg-white/10 text-white border border-white/10 hover:border-white/20 shadow-xl shadow-indigo-500/5'}
+                `}
+            >
+                <div className={`w-2 h-2 rounded-full transition-colors ${connectionState === ConnectionState.CONNECTED ? 'bg-red-500 animate-pulse' : 'bg-indigo-400'}`}></div>
+                <span className="font-medium tracking-wide text-sm uppercase">
+                    {connectionState === ConnectionState.CONNECTED ? 'Disconnect' : 'Start Conversation'}
+                </span>
+                {connectionState === ConnectionState.CONNECTING && (
+                    <div className="absolute right-4 w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
+                )}
+            </button>
+            
+            <div className="h-6 text-xs text-slate-500 uppercase tracking-widest font-medium">
+                {statusText}
+            </div>
+        </div>
+
       </main>
+
+      {/* Grounding / Search Sources Panel */}
+      {groundingMetadata && groundingMetadata.groundingChunks && groundingMetadata.groundingChunks.length > 0 && (
+          <div 
+            key={groundingMetadata.groundingChunks[0]?.web?.uri || Date.now()}
+            className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-2xl px-4 z-30"
+          >
+              <div className="bg-slate-900/80 backdrop-blur-md border border-slate-800 rounded-xl p-4 shadow-2xl animate-slide-up">
+                  <div className="flex items-center gap-2 mb-3 text-xs font-semibold text-indigo-400 uppercase tracking-wider">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                      Sources
+                  </div>
+                  <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-hide">
+                      {groundingMetadata.groundingChunks.map((chunk, idx) => (
+                          chunk.web?.uri && (
+                              <a 
+                                  key={idx} 
+                                  href={chunk.web.uri} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer"
+                                  className="flex-shrink-0 flex flex-col bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg p-3 transition-colors max-w-[200px]"
+                              >
+                                  <span className="text-xs text-slate-200 font-medium truncate w-full mb-1">
+                                      {chunk.web.title || "Source"}
+                                  </span>
+                                  <span className="text-[10px] text-slate-500 truncate w-full">
+                                      {new URL(chunk.web.uri).hostname}
+                                  </span>
+                              </a>
+                          )
+                      ))}
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Custom Keyframes for Animations */}
+      <style>{`
+        @keyframes slide-up {
+          from { transform: translateY(20px); opacity: 0; }
+          to { transform: translateY(0); opacity: 1; }
+        }
+        .animate-slide-up {
+          animation: slide-up 0.4s ease-out forwards;
+        }
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+        .scrollbar-hide {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+      `}</style>
     </div>
   );
 };

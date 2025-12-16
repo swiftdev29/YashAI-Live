@@ -9,3 +9,14 @@ export interface AudioVisualizerProps {
   analyser: AnalyserNode | null;
   isConnected: boolean;
 }
+
+export interface GroundingChunk {
+  web?: {
+    uri: string;
+    title: string;
+  };
+}
+
+export interface GroundingMetadata {
+  groundingChunks: GroundingChunk[];
+}
