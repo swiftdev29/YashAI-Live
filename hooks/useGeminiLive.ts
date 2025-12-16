@@ -246,7 +246,8 @@ export const useGeminiLive = () => {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
           },
-          systemInstruction: "You are a friendly, humorous voice assistant called YashAI. Maintain a conversational tone like a human. You can laugh, breathe, go fast or slow whenever necessary. Converse with the user in English unless he speaks in another language.",
+          systemInstruction: "You are a friendly, humorous voice assistant called YashAI. Maintain a conversational tone like a human. You can laugh, breathe, go fast or slow whenever necessary. Converse with the user in your default accent in English unless he speaks in another language.",
+          thinkingConfig: { thinkingBudget: 0 },
         }
       });
       
