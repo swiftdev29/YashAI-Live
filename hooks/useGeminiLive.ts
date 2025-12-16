@@ -358,7 +358,15 @@ export const useGeminiLive = () => {
              });
             
             const source = inputCtx.createMediaStreamSource(stream);
-            source.connect(inputAnalyser);
+            
+            // --- Input Gain Stage ---
+            // Boost microphone input by 1.5x to improve recognition and interruption detection
+            const inputGain = inputCtx.createGain();
+            inputGain.gain.value = 1.5;
+            source.connect(inputGain);
+            
+            // Connect Gain to Analyser (Visualizer sees boosted audio)
+            inputGain.connect(inputAnalyser);
             
             const scriptProcessor = inputCtx.createScriptProcessor(512, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
@@ -383,7 +391,8 @@ export const useGeminiLive = () => {
               const aiIsTalking = sourcesRef.current.size > 0;
               
               const BASE_THRESHOLD = 0.012;     // Silence floor
-              const BARGE_IN_THRESHOLD = 0.035; // Required volume to interrupt AI
+              // Slightly lowered barge-in threshold (0.035 -> 0.03) combined with 1.5x gain makes it much more responsive
+              const BARGE_IN_THRESHOLD = 0.03; 
               
               const activeThreshold = aiIsTalking ? BARGE_IN_THRESHOLD : BASE_THRESHOLD;
               
@@ -459,7 +468,8 @@ export const useGeminiLive = () => {
             const voidDestination = inputCtx.createMediaStreamDestination();
             const muteNode = inputCtx.createGain();
             muteNode.gain.value = 0;
-            source.connect(scriptProcessor);
+            // Connect GainNode to ScriptProcessor
+            inputGain.connect(scriptProcessor);
             scriptProcessor.connect(muteNode);
             muteNode.connect(voidDestination);
           },
