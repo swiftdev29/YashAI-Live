@@ -21,6 +21,7 @@ export const useGeminiLive = () => {
   const inputAnalyserRef = useRef<AnalyserNode | null>(null);
   const outputAnalyserRef = useRef<AnalyserNode | null>(null);
   const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const volumeGainNodeRef = useRef<GainNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const audioOutputRef = useRef<HTMLAudioElement | null>(null);
@@ -40,10 +41,11 @@ export const useGeminiLive = () => {
   const currentSessionIdRef = useRef<string>('');
   const groundingTimeoutRef = useRef<any>(null);
   
-  // VAD Refs
+  // VAD & Interruption Refs
   const silenceTimerRef = useRef<any>(null);
   const isUserSpeakingRef = useRef(false);
   const aiSpeakingTimerRef = useRef<any>(null);
+  const speechAccumulatorRef = useRef<number>(0); // Tracks consecutive speech frames
 
   useEffect(() => {
     isVideoActiveRef.current = isVideoActive;
@@ -238,6 +240,7 @@ export const useGeminiLive = () => {
     setIsAiSpeaking(false);
     isUserSpeakingRef.current = false;
     currentVolumeRef.current = 0;
+    speechAccumulatorRef.current = 0;
   }, [stopVideo]);
 
   const toggleMute = useCallback(() => {
@@ -264,17 +267,15 @@ export const useGeminiLive = () => {
       setIsUserSpeaking(false);
       setIsAiSpeaking(false);
       isUserSpeakingRef.current = false;
+      speechAccumulatorRef.current = 0;
 
       let inputCtx: AudioContext;
       let outputCtx: AudioContext;
       
       try {
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        // Input Context (16kHz for Speech)
         inputCtx = new AudioContextClass({ sampleRate: 16000 });
-        // Output Context (24kHz for Playback)
-        // Switch back to 'interactive' for lowest latency. 
-        // The Speaker fix relies on the DOM attachment and MediaStreamDestination, not the 'playback' hint.
+        // Use 'interactive' for low latency
         outputCtx = new AudioContextClass({ sampleRate: 24000, latencyHint: 'interactive' });
       } catch (e) {
         setError("Could not initialize audio system.");
@@ -297,6 +298,7 @@ export const useGeminiLive = () => {
       
       const volumeGainNode = outputCtx.createGain();
       volumeGainNode.gain.value = 1.0; 
+      volumeGainNodeRef.current = volumeGainNode;
       
       // SPEAKER FIX:
       // 1. Connect output to a MediaStreamDestination (not hardware directly)
@@ -319,7 +321,7 @@ export const useGeminiLive = () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ 
           audio: {
-            echoCancellation: true,
+            echoCancellation: true, // Essential
             noiseSuppression: true,
             autoGainControl: true,
             channelCount: 1
@@ -333,7 +335,6 @@ export const useGeminiLive = () => {
       }
 
       // 4. Resume contexts and start playback AFTER mic is acquired
-      // This prevents the OS from switching back to "Call/Earpiece" mode after we requested "Media" mode.
       try {
         if (inputCtx.state === 'suspended') await inputCtx.resume();
         if (outputCtx.state === 'suspended') await outputCtx.resume();
@@ -375,10 +376,31 @@ export const useGeminiLive = () => {
               const rms = Math.sqrt(sum / inputData.length);
               currentVolumeRef.current = rms;
 
-              // Local VAD Logic
-              const VAD_THRESHOLD = 0.02;
+              // --- ADAPTIVE VAD & INTERRUPTION LOGIC ---
               
-              if (rms > VAD_THRESHOLD) {
+              // 1. Determine Threshold
+              // If AI is speaking, use a much higher threshold to prevent "Self-Interruption" (Echo)
+              const aiIsTalking = sourcesRef.current.size > 0;
+              
+              const BASE_THRESHOLD = 0.012;     // Silence floor
+              const BARGE_IN_THRESHOLD = 0.035; // Required volume to interrupt AI
+              
+              const activeThreshold = aiIsTalking ? BARGE_IN_THRESHOLD : BASE_THRESHOLD;
+              
+              if (rms > activeThreshold) {
+                // User is speaking (or loud echo)
+                speechAccumulatorRef.current += 1;
+                
+                // 2. Optimistic Interruption (Ducking)
+                // If AI is speaking AND user has spoken consistently for ~3 frames (approx 100ms)
+                if (aiIsTalking && speechAccumulatorRef.current > 2) {
+                    // Local Ducking: Lower the volume immediately to let user hear themselves
+                    if (volumeGainNodeRef.current) {
+                        // Quick fade out to 10% volume, don't mute completely so user knows connection is alive
+                        volumeGainNodeRef.current.gain.setTargetAtTime(0.1, outputCtx.currentTime, 0.05);
+                    }
+                }
+
                 if (silenceTimerRef.current) {
                     clearTimeout(silenceTimerRef.current);
                     silenceTimerRef.current = null;
@@ -389,31 +411,51 @@ export const useGeminiLive = () => {
                   setIsUserSpeaking(true);
                   setIsAiSpeaking(false); 
                 }
+
+                // 3. Send Audio
+                if (activeSessionRef.current) {
+                    const pcmBlob = createPcmBlob(inputData);
+                    try {
+                        activeSessionRef.current.sendRealtimeInput({ media: pcmBlob });
+                    } catch (e) {
+                        console.debug("Send failed", e);
+                    }
+                }
+                
               } else {
+                // Silence (or low volume echo)
+                speechAccumulatorRef.current = 0;
+
                 if (isUserSpeakingRef.current && !silenceTimerRef.current) {
                   silenceTimerRef.current = setTimeout(() => {
                     isUserSpeakingRef.current = false;
                     setIsUserSpeaking(false);
                     silenceTimerRef.current = null;
+                    
+                    // Restore volume if we ducked it
+                    if (volumeGainNodeRef.current) {
+                         volumeGainNodeRef.current.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.2);
+                    }
+
                   }, 500); 
                 }
-              }
-
-              if (activeSessionRef.current) {
-                  const pcmBlob = createPcmBlob(inputData);
-                  try {
-                    activeSessionRef.current.sendRealtimeInput({ media: pcmBlob });
-                  } catch (e) {
-                     console.debug("Send failed", e);
-                  }
+                
+                // 4. Echo Gating
+                // If AI is speaking and volume is low, DO NOT SEND audio.
+                // This filters out the residual echo that AEC missed.
+                if (!aiIsTalking && activeSessionRef.current) {
+                    // Only send silence frames if AI is NOT talking.
+                    // If AI is talking, sending silence is better than sending echo, 
+                    // but sending nothing is most bandwidth efficient.
+                    // Here we continue to send if AI is NOT talking to catch soft starts.
+                    const pcmBlob = createPcmBlob(inputData);
+                    try {
+                         activeSessionRef.current.sendRealtimeInput({ media: pcmBlob });
+                    } catch(e) {}
+                }
               }
             };
 
-            // SPEAKER FIX:
-            // Route input script processor to a Void Destination (MediaStreamDestination)
-            // instead of hardware destination (inputCtx.destination).
-            // This ensures the input context doesn't try to engage the hardware output,
-            // which can confuse the OS routing.
             const voidDestination = inputCtx.createMediaStreamDestination();
             const muteNode = inputCtx.createGain();
             muteNode.gain.value = 0;
@@ -432,6 +474,12 @@ export const useGeminiLive = () => {
                sourcesRef.current.clear();
                nextStartTimeRef.current = 0;
                setIsAiSpeaking(false);
+               
+               // Restore volume immediately on server confirmation
+               if (volumeGainNodeRef.current && outputAudioContextRef.current) {
+                  volumeGainNodeRef.current.gain.cancelScheduledValues(outputAudioContextRef.current.currentTime);
+                  volumeGainNodeRef.current.gain.value = 1.0;
+               }
              }
 
              const grounding = (message.serverContent?.modelTurn as any)?.groundingMetadata || 
