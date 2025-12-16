@@ -1,9 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useGeminiLive } from './hooks/useGeminiLive';
-import { ConnectionState, GroundingChunk } from './types';
+import { ConnectionState } from './types';
 import { Visualizer } from './components/Visualizer';
 
-const App: React.FC = () => {
+const ACCESS_CODE = 'yashai';
+
+// Main Application Component (Protected)
+const MainApp: React.FC = () => {
   const { 
     connect, 
     disconnect, 
@@ -34,10 +37,7 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-[#0A0A0A] text-white font-sans flex flex-col relative overflow-hidden selection:bg-blue-500/30">
       
-      {/* Dynamic Background 
-          OPTIMIZATION: Added 'transform-gpu' (translate3d) and 'will-change' to force 
-          GPU composition layer. This fixes lag on iOS Safari caused by large blurs.
-      */}
+      {/* Dynamic Background */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
         <div className={`absolute top-[-20%] left-[-10%] w-[60%] h-[60%] rounded-full bg-blue-900/10 blur-[150px] transition-all duration-1000 ease-in-out transform-gpu will-change-[transform,opacity] ${connectionState === ConnectionState.CONNECTED ? 'opacity-100 scale-110' : 'opacity-40 scale-100'}`} />
         <div className={`absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] rounded-full bg-indigo-900/10 blur-[150px] transition-all duration-1000 ease-in-out transform-gpu will-change-[transform,opacity] ${connectionState === ConnectionState.CONNECTED ? 'opacity-100 scale-110' : 'opacity-40 scale-100'}`} />
@@ -189,6 +189,72 @@ const App: React.FC = () => {
       `}</style>
     </div>
   );
+};
+
+// Authentication Wrapper
+const App: React.FC = () => {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [authError, setAuthError] = useState('');
+
+  if (!isAuthenticated) {
+    return (
+        <div className="min-h-screen bg-[#0A0A0A] text-white font-sans flex flex-col items-center justify-center relative overflow-hidden selection:bg-blue-500/30">
+            {/* Background - Consistent with Main App */}
+            <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] rounded-full bg-blue-900/10 blur-[150px] animate-pulse" />
+                <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] rounded-full bg-indigo-900/10 blur-[150px] animate-pulse" />
+            </div>
+
+            <div className="z-10 w-full max-w-md p-8 bg-white/5 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl flex flex-col gap-6 transform-gpu transition-all">
+                <div className="text-center">
+                    <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-blue-500 to-indigo-500 mx-auto mb-4 shadow-lg shadow-indigo-500/20"></div>
+                    <h1 className="text-2xl font-bold tracking-tight text-white mb-2">YashAI Voice</h1>
+                    <p className="text-slate-400 text-sm">Restricted Access</p>
+                </div>
+
+                <form 
+                    onSubmit={(e) => {
+                        e.preventDefault();
+                        if (passcodeInput.toLowerCase().trim() === ACCESS_CODE) {
+                            setIsAuthenticated(true);
+                            setAuthError('');
+                        } else {
+                            setAuthError('Access denied. Invalid code.');
+                            setPasscodeInput('');
+                        }
+                    }}
+                    className="flex flex-col gap-4"
+                >
+                    <div>
+                        <input 
+                            type="password" 
+                            value={passcodeInput}
+                            onChange={(e) => setPasscodeInput(e.target.value)}
+                            placeholder="Enter access code"
+                            className="w-full bg-black/20 border border-white/10 rounded-lg px-4 py-3 text-center text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all"
+                            autoFocus
+                        />
+                        {authError && <p className="text-red-400 text-xs text-center mt-2">{authError}</p>}
+                    </div>
+                    
+                    <button 
+                        type="submit"
+                        className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-3 rounded-lg transition-colors shadow-lg shadow-indigo-500/20"
+                    >
+                        Enter
+                    </button>
+                </form>
+            </div>
+            
+            <div className="absolute bottom-6 text-xs text-slate-600">
+                Hint: {ACCESS_CODE}
+            </div>
+        </div>
+    );
+  }
+
+  return <MainApp />;
 };
 
 export default App;
