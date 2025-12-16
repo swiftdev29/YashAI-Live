@@ -21,7 +21,6 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
     const resizeCanvas = () => {
       const parent = canvas.parentElement;
       if (parent) {
-        // Keep resolution 1:1 with CSS pixels for performance
         canvas.width = parent.clientWidth;
         canvas.height = parent.clientHeight;
       }
@@ -31,7 +30,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
     resizeCanvas();
 
     // PERFORMANCE OPTIMIZATION:
-    // Allocate buffers and lookup tables once, outside the render loop.
+    // Allocate buffers and lookup tables once
     let dataArray: Uint8Array | null = null;
     let cosTable: Float32Array | null = null;
     let sinTable: Float32Array | null = null;
@@ -41,7 +40,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
       bufferLength = analyser.frequencyBinCount;
       dataArray = new Uint8Array(bufferLength);
       
-      // Pre-calculate Sin/Cos tables to avoid expensive trig in the loop
+      // Pre-calculate Sin/Cos tables
       cosTable = new Float32Array(bufferLength);
       sinTable = new Float32Array(bufferLength);
       
@@ -59,7 +58,6 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
       const height = canvas.height;
       const centerX = width / 2;
       const centerY = height / 2;
-      // Base radius
       const radius = Math.min(width, height) / 4;
 
       ctx.clearRect(0, 0, width, height);
@@ -84,7 +82,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
       if (analyser && dataArray && cosTable && sinTable) {
         analyser.getByteFrequencyData(dataArray);
 
-        // Calculate average volume for pulse effect using a simple loop
+        // Calculate volume
         let sum = 0;
         for (let i = 0; i < bufferLength; i++) {
           sum += dataArray[i];
@@ -92,9 +90,9 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
         const avg = sum / bufferLength;
         const pulse = (avg / 255);
 
-        // --- Layer 1: Outer Glow ---
+        // --- Layer 1: Glow ---
         const gradient = ctx.createRadialGradient(centerX, centerY, radius * 0.5, centerX, centerY, radius * 2);
-        gradient.addColorStop(0, `${color}40`); // Low opacity hex
+        gradient.addColorStop(0, `${color}40`); 
         gradient.addColorStop(1, 'transparent');
         ctx.fillStyle = gradient;
         ctx.globalAlpha = 0.3 + (pulse * 0.5);
@@ -103,10 +101,10 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
         ctx.fill();
         ctx.globalAlpha = 1.0;
 
-        // --- Layer 2: Frequency Rings ---
+        // --- Layer 2: Frequency Ring ---
         ctx.beginPath();
         
-        // Optimization: Stride by 2. We don't need 128 points for a small visualizer. 
+        // Stride optimization
         const stride = 2; 
         
         for (let i = 0; i < bufferLength; i += stride) {
@@ -114,7 +112,6 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
           const offset = (value / 255) * (radius * 0.6);
           const r = radius + offset;
           
-          // Use lookup tables
           const x = centerX + cosTable[i] * r;
           const y = centerY + sinTable[i] * r;
 
@@ -127,14 +124,14 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        // Ring 2 (Smoothed Inner Circle)
+        // --- Layer 3: Inner Ring ---
         ctx.beginPath();
         ctx.arc(centerX, centerY, radius * 0.8 + (pulse * 20), 0, Math.PI * 2);
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
         ctx.lineWidth = 1;
         ctx.stroke();
 
-        // --- Layer 3: Core ---
+        // --- Layer 4: Core ---
         ctx.beginPath();
         ctx.arc(centerX, centerY, radius * 0.4 + (pulse * 10), 0, Math.PI * 2);
         ctx.fillStyle = color;

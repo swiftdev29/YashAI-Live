@@ -106,8 +106,6 @@ export const useGeminiLive = () => {
       setIsMuted(false);
 
       // 1. Setup Audio Contexts
-      // Input: 16kHz for Gemini compatibility
-      // We use a try-catch for context creation as it might fail on some browsers if too many are open
       let inputCtx: AudioContext;
       let outputCtx: AudioContext;
       
@@ -141,16 +139,12 @@ export const useGeminiLive = () => {
 
       const outputAnalyser = outputCtx.createAnalyser();
       outputAnalyser.fftSize = 256;
-      // Visualization Optimization: Smoother animation for the waveform visualizer
+      // Visualization: Restore 0.8 smoothing for liquid waveform effect
       outputAnalyser.smoothingTimeConstant = 0.8;
       outputAnalyserRef.current = outputAnalyser;
       
-      // Volume Boost: Create a gain node to increase the output volume
       const volumeGainNode = outputCtx.createGain();
-      volumeGainNode.gain.value = 2.5; // 2.5x volume boost
-
-      // Connect graph: Gain -> Analyser -> Destination
-      // Sources will connect to Gain
+      volumeGainNode.gain.value = 2.5;
       volumeGainNode.connect(outputAnalyser);
       outputAnalyser.connect(outputCtx.destination);
 
@@ -184,9 +178,9 @@ export const useGeminiLive = () => {
             source.connect(inputAnalyser);
             
             // ScriptProcessor for PCM
-            // Latency Optimization: Reduced buffer size from 4096 (256ms) to 2048 (128ms)
-            // This sends audio chunks to the model twice as often, reducing input lag.
-            const scriptProcessor = inputCtx.createScriptProcessor(2048, 1, 1);
+            // LATENCY OPTIMIZATION: Buffer size reduced to 1024 (approx 64ms at 16kHz)
+            // This sends data to the model twice as fast as the previous 2048 setting.
+            const scriptProcessor = inputCtx.createScriptProcessor(1024, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
 
             scriptProcessor.onaudioprocess = (e) => {
@@ -232,15 +226,10 @@ export const useGeminiLive = () => {
                                (message.serverContent as any)?.groundingMetadata;
              
              if (grounding) {
-               // Clear existing timer if any
                if (groundingTimeoutRef.current) {
                  clearTimeout(groundingTimeoutRef.current);
                }
-               
-               // Set new metadata
                setGroundingMetadata(grounding);
-               
-               // Set timer to clear metadata after 3 seconds
                groundingTimeoutRef.current = setTimeout(() => {
                  setGroundingMetadata(null);
                }, 3000);
@@ -252,7 +241,6 @@ export const useGeminiLive = () => {
                const ctx = outputAudioContextRef.current;
                if (!ctx) return;
 
-               // Sync timing
                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
 
                const audioBuffer = await decodeAudioData(
@@ -298,7 +286,7 @@ export const useGeminiLive = () => {
           },
           systemInstruction: "You are a friendly, humorous voice assistant called *Yash AI*. You have been completely developed from scratch by proficient developer Yash Sinha, who has trained you using YashAI Max, an LLM model. Maintain a conversational tone like a human. You can use expressions in your voice like laughing, breathing and others whenever necessary. Converse with the user in your default American accent in English unless the user speaks in another language.",
           thinkingConfig: { thinkingBudget: 0 },
-          tools: [{ googleSearch: {} }] // Enable Google Search Grounding
+          tools: [{ googleSearch: {} }] 
         }
       });
       
@@ -321,7 +309,6 @@ export const useGeminiLive = () => {
     }
   }, [disconnect]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       disconnect();

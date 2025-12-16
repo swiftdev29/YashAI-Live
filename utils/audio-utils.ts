@@ -11,11 +11,17 @@ export function base64ToBytes(base64: string): Uint8Array {
 }
 
 export function bytesToBase64(bytes: Uint8Array): string {
+  // Optimization: Use spread operator or apply for native speed instead of loop concatenation
+  // For standard audio chunks (approx 2KB - 4KB), this is significantly faster on main thread
+  const CHUNK_SIZE = 0x8000; // 32k chunks to avoid stack overflow
   let binary = '';
   const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  
+  for (let i = 0; i < len; i += CHUNK_SIZE) {
+    // @ts-ignore
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK_SIZE, len)));
   }
+  
   return btoa(binary);
 }
 
