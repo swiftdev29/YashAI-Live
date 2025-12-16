@@ -133,7 +133,7 @@ export const useGeminiLive = () => {
       inputAudioContextRef.current = inputCtx;
       outputAudioContextRef.current = outputCtx;
 
-      // 2. Setup Analysers
+      // 2. Setup Analysers and Gain
       const inputAnalyser = inputCtx.createAnalyser();
       inputAnalyser.fftSize = 256;
       inputAnalyser.smoothingTimeConstant = 0.5; // Smoother visualization
@@ -143,6 +143,15 @@ export const useGeminiLive = () => {
       outputAnalyser.fftSize = 256;
       outputAnalyser.smoothingTimeConstant = 0.5;
       outputAnalyserRef.current = outputAnalyser;
+      
+      // Volume Boost: Create a gain node to increase the output volume
+      const volumeGainNode = outputCtx.createGain();
+      volumeGainNode.gain.value = 2.5; // 2.5x volume boost
+
+      // Connect graph: Gain -> Analyser -> Destination
+      // Sources will connect to Gain
+      volumeGainNode.connect(outputAnalyser);
+      outputAnalyser.connect(outputCtx.destination);
 
       // 3. Get Microphone Access
       let stream: MediaStream;
@@ -174,7 +183,9 @@ export const useGeminiLive = () => {
             source.connect(inputAnalyser);
             
             // ScriptProcessor for PCM
-            const scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
+            // Latency Optimization: Reduced buffer size from 4096 (256ms) to 2048 (128ms)
+            // This sends audio chunks to the model twice as often, reducing input lag.
+            const scriptProcessor = inputCtx.createScriptProcessor(2048, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
 
             scriptProcessor.onaudioprocess = (e) => {
@@ -252,8 +263,7 @@ export const useGeminiLive = () => {
 
                const source = ctx.createBufferSource();
                source.buffer = audioBuffer;
-               source.connect(outputAnalyser);
-               outputAnalyser.connect(ctx.destination);
+               source.connect(volumeGainNode);
 
                source.addEventListener('ended', () => {
                  sourcesRef.current.delete(source);
