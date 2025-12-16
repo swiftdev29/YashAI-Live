@@ -9,6 +9,32 @@ interface VisualizerProps {
 export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, color = '#38bdf8' }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameRef = useRef<number>(0);
+  
+  // Use refs for persistent data to avoid re-allocation on re-renders
+  const buffersRef = useRef<{
+    dataArray: Uint8Array | null;
+    cosTable: Float32Array | null;
+    sinTable: Float32Array | null;
+    bufferLength: number;
+  }>({ dataArray: null, cosTable: null, sinTable: null, bufferLength: 0 });
+
+  // Initialize buffers only when analyser changes
+  useEffect(() => {
+    if (analyser) {
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+      const cosTable = new Float32Array(bufferLength);
+      const sinTable = new Float32Array(bufferLength);
+      
+      for (let i = 0; i < bufferLength; i++) {
+        const angle = (Math.PI * 2 * i) / bufferLength;
+        cosTable[i] = Math.cos(angle);
+        sinTable[i] = Math.sin(angle);
+      }
+
+      buffersRef.current = { dataArray, cosTable, sinTable, bufferLength };
+    }
+  }, [analyser]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -19,9 +45,6 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
 
     const parent = canvas.parentElement;
 
-    // Use ResizeObserver to automatically update canvas resolution
-    // This fixes issues where the canvas is skewed when the component mounts
-    // while the parent container is still resizing/transitioning.
     const resizeCanvas = () => {
       if (parent) {
         canvas.width = parent.clientWidth;
@@ -36,31 +59,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
        });
        observer.observe(parent);
     }
-    
-    // Initial size
     resizeCanvas();
-
-    // PERFORMANCE OPTIMIZATION:
-    // Allocate buffers and lookup tables once
-    let dataArray: Uint8Array | null = null;
-    let cosTable: Float32Array | null = null;
-    let sinTable: Float32Array | null = null;
-    let bufferLength = 0;
-
-    if (analyser) {
-      bufferLength = analyser.frequencyBinCount;
-      dataArray = new Uint8Array(bufferLength);
-      
-      // Pre-calculate Sin/Cos tables
-      cosTable = new Float32Array(bufferLength);
-      sinTable = new Float32Array(bufferLength);
-      
-      for (let i = 0; i < bufferLength; i++) {
-        const angle = (Math.PI * 2 * i) / bufferLength;
-        cosTable[i] = Math.cos(angle);
-        sinTable[i] = Math.sin(angle);
-      }
-    }
 
     const render = () => {
       if (!ctx) return;
@@ -73,7 +72,6 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
 
       ctx.clearRect(0, 0, width, height);
 
-      // Idle State
       if (!isActive) {
          ctx.beginPath();
          ctx.arc(centerX, centerY, radius * 0.5, 0, 2 * Math.PI);
@@ -90,10 +88,11 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
          return;
       }
       
+      const { dataArray, cosTable, sinTable, bufferLength } = buffersRef.current;
+
       if (analyser && dataArray && cosTable && sinTable) {
         analyser.getByteFrequencyData(dataArray);
 
-        // Calculate volume
         let sum = 0;
         for (let i = 0; i < bufferLength; i++) {
           sum += dataArray[i];
@@ -101,7 +100,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
         const avg = sum / bufferLength;
         const pulse = (avg / 255);
 
-        // --- Layer 1: Glow ---
+        // Layer 1: Glow
         const gradient = ctx.createRadialGradient(centerX, centerY, radius * 0.5, centerX, centerY, radius * 2);
         gradient.addColorStop(0, `${color}40`); 
         gradient.addColorStop(1, 'transparent');
@@ -112,12 +111,9 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
         ctx.fill();
         ctx.globalAlpha = 1.0;
 
-        // --- Layer 2: Frequency Ring ---
+        // Layer 2: Frequency Ring
         ctx.beginPath();
-        
-        // Stride optimization
         const stride = 2; 
-        
         for (let i = 0; i < bufferLength; i += stride) {
           const value = dataArray[i];
           const offset = (value / 255) * (radius * 0.6);
@@ -129,20 +125,19 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }
-        
         ctx.closePath();
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        // --- Layer 3: Inner Ring ---
+        // Layer 3: Inner Ring
         ctx.beginPath();
         ctx.arc(centerX, centerY, radius * 0.8 + (pulse * 20), 0, Math.PI * 2);
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
         ctx.lineWidth = 1;
         ctx.stroke();
 
-        // --- Layer 4: Core ---
+        // Layer 4: Core
         ctx.beginPath();
         ctx.arc(centerX, centerY, radius * 0.4 + (pulse * 10), 0, Math.PI * 2);
         ctx.fillStyle = color;

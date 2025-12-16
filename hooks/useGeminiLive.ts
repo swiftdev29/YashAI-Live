@@ -41,6 +41,11 @@ export const useGeminiLive = () => {
   }, [isVideoActive]);
 
   const stopVideo = useCallback(() => {
+    // 1. Immediately flag as inactive to stop loop logic
+    setIsVideoActive(false);
+    isVideoActiveRef.current = false;
+    
+    // 2. Stop actual streams
     if (videoStreamRef.current) {
       videoStreamRef.current.getTracks().forEach(track => track.stop());
       videoStreamRef.current = null;
@@ -48,7 +53,9 @@ export const useGeminiLive = () => {
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
-    setIsVideoActive(false);
+    
+    // 3. Reset logic triggers
+    currentVolumeRef.current = 0;
   }, []);
 
   const startVideo = useCallback(async (mode: "user" | "environment" = facingMode) => {
@@ -99,14 +106,12 @@ export const useGeminiLive = () => {
     const captureAndSendFrame = async () => {
         if (!isMounted) return;
 
-        // Conditions to run: Video is active, Connected, Refs exist
-        if (isVideoActive && connectionState === ConnectionState.CONNECTED && videoRef.current && sessionPromiseRef.current) {
+        // Strict Check: Must be active, connected, and have refs
+        if (isVideoActiveRef.current && connectionState === ConnectionState.CONNECTED && videoRef.current && sessionPromiseRef.current) {
             
             const now = Date.now();
             
             // DYNAMIC FRAMERATE STRATEGY
-            // If Volume > 0.01 (User speaking), interval is 120ms (~8 FPS).
-            // If Volume < 0.01 (User silent), interval is 3000ms (~0.3 FPS).
             const isTalking = currentVolumeRef.current > 0.01;
             const targetInterval = isTalking ? 120 : 3000;
 
@@ -130,6 +135,12 @@ export const useGeminiLive = () => {
 
                             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
+                            // Check active state again before expensive encoding
+                            if (!isVideoActiveRef.current) {
+                                isSending = false;
+                                return;
+                            }
+
                             const base64 = await new Promise<string | null>((resolve) => {
                                 canvas.toBlob((blob) => {
                                     if (blob) {
@@ -140,7 +151,10 @@ export const useGeminiLive = () => {
                                 }, 'image/jpeg', 0.4); 
                             });
 
-                            if (base64) {
+                            // CRITICAL: Check active state one last time before sending.
+                            // This prevents a frame from being queued if the user stopped video 
+                            // while the promise was resolving.
+                            if (base64 && isVideoActiveRef.current) {
                                 const session = await sessionPromiseRef.current;
                                 await session.sendRealtimeInput({
                                     media: { mimeType: 'image/jpeg', data: base64 }
@@ -337,7 +351,6 @@ export const useGeminiLive = () => {
 
               const inputData = e.inputBuffer.getChannelData(0);
               
-              // PERFORMANCE: Only calculate RMS if video is active to avoid CPU usage in voice-only mode
               if (isVideoActiveRef.current) {
                 let sum = 0;
                 for (let i = 0; i < inputData.length; i++) {
