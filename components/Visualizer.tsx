@@ -17,16 +17,27 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
     const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) return;
 
-    // Set canvas size
+    const parent = canvas.parentElement;
+
+    // Use ResizeObserver to automatically update canvas resolution
+    // This fixes issues where the canvas is skewed when the component mounts
+    // while the parent container is still resizing/transitioning.
     const resizeCanvas = () => {
-      const parent = canvas.parentElement;
       if (parent) {
         canvas.width = parent.clientWidth;
         canvas.height = parent.clientHeight;
       }
     };
+
+    let observer: ResizeObserver | null = null;
+    if (parent) {
+       observer = new ResizeObserver(() => {
+         resizeCanvas();
+       });
+       observer.observe(parent);
+    }
     
-    window.addEventListener('resize', resizeCanvas);
+    // Initial size
     resizeCanvas();
 
     // PERFORMANCE OPTIMIZATION:
@@ -144,7 +155,7 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
     render();
 
     return () => {
-      window.removeEventListener('resize', resizeCanvas);
+      if (observer) observer.disconnect();
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }

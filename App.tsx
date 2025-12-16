@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useGeminiLive } from './hooks/useGeminiLive';
 import { ConnectionState } from './types';
 import { Visualizer } from './components/Visualizer';
 
 const ACCESS_CODE = 'yashai';
+const AUTH_STORAGE_KEY = 'yashai_auth_session';
+const AUTH_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 // Main Application Component (Protected)
 const MainApp: React.FC = () => {
@@ -193,7 +195,21 @@ const MainApp: React.FC = () => {
 
 // Authentication Wrapper
 const App: React.FC = () => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem(AUTH_STORAGE_KEY);
+      if (stored) {
+        const { timestamp } = JSON.parse(stored);
+        if (Date.now() - timestamp < AUTH_EXPIRY_MS) {
+          return true;
+        }
+      }
+    } catch (e) {
+      console.error("Auth storage read error", e);
+    }
+    return false;
+  });
+  
   const [passcodeInput, setPasscodeInput] = useState('');
   const [authError, setAuthError] = useState('');
 
@@ -219,6 +235,9 @@ const App: React.FC = () => {
                         if (passcodeInput.toLowerCase().trim() === ACCESS_CODE) {
                             setIsAuthenticated(true);
                             setAuthError('');
+                            localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({
+                              timestamp: Date.now()
+                            }));
                         } else {
                             setAuthError('Access denied. Invalid code.');
                             setPasscodeInput('');
