@@ -24,6 +24,7 @@ export const useGeminiLive = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoStreamRef = useRef<MediaStream | null>(null);
   const videoIntervalRef = useRef<number | null>(null);
+  const isProcessingFrameRef = useRef<boolean>(false);
 
   // Session Management
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
@@ -44,6 +45,7 @@ export const useGeminiLive = () => {
       videoRef.current.srcObject = null;
     }
     setIsVideoActive(false);
+    isProcessingFrameRef.current = false;
   }, []);
 
   const startVideo = useCallback(async (mode: "user" | "environment" = facingMode) => {
@@ -52,9 +54,9 @@ export const useGeminiLive = () => {
     if (isVideoActive && videoStreamRef.current) {
        const currentTrack = videoStreamRef.current.getVideoTracks()[0];
        const currentMode = currentTrack.getSettings().facingMode;
-       if (currentMode === mode) return; // Already running this mode
+       // If we are already in the correct mode, don't restart
+       if (currentMode === mode || (!currentMode && mode === 'user')) return; 
        
-       // Stop existing for switch
        stopVideo(); 
     }
 
@@ -75,56 +77,80 @@ export const useGeminiLive = () => {
       
       setIsVideoActive(true);
 
-      // Setup Frame Capture Loop
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
-      // OPTIMIZATION: Increased from 0.5 to 0.8 for better visual accuracy
-      const JPEG_QUALITY = 0.8; 
+      
+      // LATENCY FIX:
+      // 1. Reduced JPEG quality to 0.6
+      // 2. Implemented frame dropping (isProcessingFrameRef)
+      // 3. Downscale if image is too large
+      const JPEG_QUALITY = 0.6; 
 
-      // OPTIMIZATION: Increased frame rate. 330ms ~= 3 FPS.
-      // 500ms (2 FPS) felt too laggy. 330ms is a good balance for "live" feel vs bandwidth.
       videoIntervalRef.current = window.setInterval(async () => {
         if (!ctx || !videoRef.current || !sessionPromiseRef.current) return;
-        
-        // Ensure we only process if connected
         if (connectionState !== ConnectionState.CONNECTED) return;
+        
+        // DROP FRAME if previous one is still processing
+        if (isProcessingFrameRef.current) return;
+        isProcessingFrameRef.current = true;
 
-        canvas.width = videoRef.current.videoWidth;
-        canvas.height = videoRef.current.videoHeight;
-        ctx.drawImage(videoRef.current, 0, 0);
+        try {
+            const videoWidth = videoRef.current.videoWidth;
+            const videoHeight = videoRef.current.videoHeight;
+            
+            // Limit max dimension to 480px for speed
+            const MAX_DIMENSION = 480;
+            const scale = Math.min(1, MAX_DIMENSION / Math.max(videoWidth, videoHeight));
+            
+            canvas.width = videoWidth * scale;
+            canvas.height = videoHeight * scale;
+            
+            ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
 
-        canvas.toBlob(async (blob) => {
-          if (blob) {
-            try {
-              const base64Data = await blobToBase64(blob);
-              sessionPromiseRef.current?.then(session => {
-                try {
-                    session.sendRealtimeInput({
+            const base64Data = await new Promise<string | null>((resolve) => {
+                canvas.toBlob(async (blob) => {
+                    if (blob) {
+                         // We can assume blobToBase64 is fast, but waiting for it here
+                         try {
+                           const b64 = await blobToBase64(blob);
+                           resolve(b64);
+                         } catch {
+                           resolve(null);
+                         }
+                    } else {
+                        resolve(null);
+                    }
+                }, 'image/jpeg', JPEG_QUALITY);
+            });
+
+            if (base64Data) {
+                 const session = await sessionPromiseRef.current;
+                 session.sendRealtimeInput({
                       media: {
                         mimeType: 'image/jpeg',
                         data: base64Data
                       }
-                    });
-                } catch(e) {
-                    console.debug("Frame send error", e);
-                }
-              });
-            } catch (e) {
-               console.debug("Blob conversion error", e);
+                 });
             }
-          }
-        }, 'image/jpeg', JPEG_QUALITY);
+        } catch(e) {
+            console.debug("Frame capture error", e);
+        } finally {
+            isProcessingFrameRef.current = false;
+        }
 
-      }, 330);
+      }, 200); // Faster polling, but safeguarded by isProcessingFrameRef
 
     } catch (e) {
       console.error("Failed to start video", e);
       // Fallback: If environment camera fails, try user camera
       if (mode === 'environment') {
         console.warn("Falling back to user camera");
+        // Update state to reflect fallback
+        setFacingMode('user');
         startVideo('user');
       } else {
          setError("Could not access camera.");
+         setIsVideoActive(false);
       }
     }
   }, [connectionState, isVideoActive, stopVideo, facingMode]);
@@ -142,6 +168,8 @@ export const useGeminiLive = () => {
     setFacingMode(newMode);
     // Restart video with new mode if it's currently active
     if (isVideoActive) {
+        // We need to pass the new mode explicitly because state update might be async/batched
+        // although inside useCallback it reads from scope, but here we invoke startVideo directly
         startVideo(newMode);
     }
   }, [facingMode, isVideoActive, startVideo]);
@@ -151,35 +179,29 @@ export const useGeminiLive = () => {
     const sessionId = currentSessionIdRef.current;
     console.log(`[${sessionId}] Disconnecting...`);
 
-    // Stop Video first
     stopVideo();
 
-    // Stop Microphone Stream
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
       mediaStreamRef.current = null;
     }
 
-    // Stop Script Processor
     if (scriptProcessorRef.current) {
       scriptProcessorRef.current.disconnect();
       scriptProcessorRef.current.onaudioprocess = null;
       scriptProcessorRef.current = null;
     }
 
-    // Stop all playing sources
     sourcesRef.current.forEach(source => {
       try { source.stop(); } catch (e) { /* ignore */ }
     });
     sourcesRef.current.clear();
 
-    // Clear Grounding Timeout
     if (groundingTimeoutRef.current) {
       clearTimeout(groundingTimeoutRef.current);
       groundingTimeoutRef.current = null;
     }
 
-    // Close Audio Contexts
     if (inputAudioContextRef.current) {
       try {
         if (inputAudioContextRef.current.state !== 'closed') {
@@ -223,7 +245,6 @@ export const useGeminiLive = () => {
     console.log(`[${sessionId}] Connecting...`);
 
     try {
-      // Ensure any previous connection is fully cleaned up
       await disconnect();
       
       setConnectionState(ConnectionState.CONNECTING);
@@ -231,7 +252,6 @@ export const useGeminiLive = () => {
       setGroundingMetadata(null);
       setIsMuted(false);
 
-      // 1. Setup Audio Contexts
       let inputCtx: AudioContext;
       let outputCtx: AudioContext;
       
@@ -246,7 +266,6 @@ export const useGeminiLive = () => {
         return;
       }
 
-      // Resume contexts immediately
       try {
         if (inputCtx.state === 'suspended') await inputCtx.resume();
         if (outputCtx.state === 'suspended') await outputCtx.resume();
@@ -257,7 +276,6 @@ export const useGeminiLive = () => {
       inputAudioContextRef.current = inputCtx;
       outputAudioContextRef.current = outputCtx;
 
-      // 2. Setup Analysers and Gain
       const inputAnalyser = inputCtx.createAnalyser();
       inputAnalyser.fftSize = 256;
       inputAnalyser.smoothingTimeConstant = 0.5;
@@ -265,7 +283,6 @@ export const useGeminiLive = () => {
 
       const outputAnalyser = outputCtx.createAnalyser();
       outputAnalyser.fftSize = 256;
-      // Visualization: Restore 0.8 smoothing for liquid waveform effect
       outputAnalyser.smoothingTimeConstant = 0.8;
       outputAnalyserRef.current = outputAnalyser;
       
@@ -274,7 +291,6 @@ export const useGeminiLive = () => {
       volumeGainNode.connect(outputAnalyser);
       outputAnalyser.connect(outputCtx.destination);
 
-      // 3. Get Microphone Access
       let stream: MediaStream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -286,10 +302,8 @@ export const useGeminiLive = () => {
         return;
       }
 
-      // 4. Initialize Gemini Client
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
-      // 5. Start Session
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         callbacks: {
@@ -299,12 +313,9 @@ export const useGeminiLive = () => {
 
              setConnectionState(ConnectionState.CONNECTED);
             
-            // Setup Microphone Input Stream
             const source = inputCtx.createMediaStreamSource(stream);
             source.connect(inputAnalyser);
             
-            // ScriptProcessor for PCM
-            // LATENCY OPTIMIZATION: Buffer size reduced to 1024 (approx 64ms at 16kHz)
             const scriptProcessor = inputCtx.createScriptProcessor(1024, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
 
@@ -336,7 +347,6 @@ export const useGeminiLive = () => {
           onmessage: async (message: LiveServerMessage) => {
              if (currentSessionIdRef.current !== sessionId) return;
 
-             // Handle interruptions
              const interrupted = message.serverContent?.interrupted;
              if (interrupted) {
                sourcesRef.current.forEach(source => {
@@ -346,7 +356,6 @@ export const useGeminiLive = () => {
                nextStartTimeRef.current = 0;
              }
 
-             // Handle Grounding Metadata
              const grounding = (message.serverContent?.modelTurn as any)?.groundingMetadata || 
                                (message.serverContent as any)?.groundingMetadata;
              
@@ -360,7 +369,6 @@ export const useGeminiLive = () => {
                }, 3000);
              }
 
-            // Handle Audio Output
             const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64Audio) {
                const ctx = outputAudioContextRef.current;
@@ -432,7 +440,7 @@ export const useGeminiLive = () => {
       setConnectionState(ConnectionState.ERROR);
       disconnect();
     }
-  }, [disconnect]);
+  }, [disconnect, facingMode]);
 
   useEffect(() => {
     return () => {
