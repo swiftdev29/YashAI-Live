@@ -1,4 +1,4 @@
-const CACHE_NAME = 'yashai-v1';
+const CACHE_NAME = 'yashai-v2';
 
 // Add the files you want to cache immediately
 const PRECACHE_URLS = [

@@ -43,10 +43,10 @@ const App: React.FC = () => {
       <header className="absolute top-0 w-full p-6 z-20 flex justify-between items-center opacity-80">
         <div className="flex items-center gap-2">
            <div className="w-3 h-3 rounded-full bg-gradient-to-r from-blue-500 to-indigo-500"></div>
-           <span className="font-semibold tracking-wide text-sm text-slate-300">YashAI Voice</span>
+           <span className="font-semibold tracking-wide text-sm text-slate-300">YashAI</span>
         </div>
         <div className="text-xs text-slate-500 font-mono">
-            LIVE VOICE ASSISTANT
+            LIVE NATIVE AUDIO
         </div>
       </header>
 

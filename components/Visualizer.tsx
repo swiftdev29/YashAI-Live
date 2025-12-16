@@ -17,12 +17,10 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
     const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) return;
 
-    // Set canvas size
     const resizeCanvas = () => {
       const parent = canvas.parentElement;
       if (parent) {
-        // Keep resolution 1:1 with CSS pixels for performance on high-DPI mobile screens
-        // Increasing this to window.devicePixelRatio would look sharper but kill performance
+        // 1:1 pixel mapping avoids expensive scaling on low-end GPUs
         canvas.width = parent.clientWidth;
         canvas.height = parent.clientHeight;
       }
@@ -31,27 +29,9 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
 
-    // PERFORMANCE OPTIMIZATION:
-    // Allocate buffers and lookup tables once, outside the render loop.
-    // This prevents Garbage Collection (GC) stuttering on low-end devices.
     let dataArray: Uint8Array | null = null;
-    let cosTable: Float32Array | null = null;
-    let sinTable: Float32Array | null = null;
-    let bufferLength = 0;
-
     if (analyser) {
-      bufferLength = analyser.frequencyBinCount;
-      dataArray = new Uint8Array(bufferLength);
-      
-      // Pre-calculate Sin/Cos tables to avoid expensive trig in the loop
-      cosTable = new Float32Array(bufferLength);
-      sinTable = new Float32Array(bufferLength);
-      
-      for (let i = 0; i < bufferLength; i++) {
-        const angle = (Math.PI * 2 * i) / bufferLength;
-        cosTable[i] = Math.cos(angle);
-        sinTable[i] = Math.sin(angle);
-      }
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
     }
 
     const render = () => {
@@ -61,87 +41,80 @@ export const Visualizer: React.FC<VisualizerProps> = ({ analyser, isActive, colo
       const height = canvas.height;
       const centerX = width / 2;
       const centerY = height / 2;
-      // Base radius
-      const radius = Math.min(width, height) / 4;
+      
+      // Calculate max radius to prevent clipping
+      const maxRadius = Math.min(width, height) / 2;
+      const baseRadius = maxRadius * 0.25;
 
       ctx.clearRect(0, 0, width, height);
 
-      // Idle State
+      // Idle State: Breathing Dot
       if (!isActive) {
+         const time = Date.now() / 1000;
+         const breath = Math.sin(time * 2) * 0.1 + 1; // Gentle breath
+         
          ctx.beginPath();
-         ctx.arc(centerX, centerY, radius * 0.5, 0, 2 * Math.PI);
-         ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-         ctx.lineWidth = 2;
-         ctx.stroke();
-
-         ctx.beginPath();
-         ctx.arc(centerX, centerY, radius * 0.1, 0, 2 * Math.PI);
-         ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+         ctx.arc(centerX, centerY, baseRadius * 0.5 * breath, 0, 2 * Math.PI);
+         ctx.fillStyle = color;
+         ctx.globalAlpha = 0.2;
          ctx.fill();
+         ctx.globalAlpha = 1.0;
+         
+         animationFrameRef.current = requestAnimationFrame(render);
          return;
       }
       
-      if (analyser && dataArray && cosTable && sinTable) {
+      if (analyser && dataArray) {
         analyser.getByteFrequencyData(dataArray);
 
-        // Calculate average volume for pulse effect using a simple loop (faster than reduce)
+        // Performance Optimization:
+        // 1. Sample only the lower 70% of frequencies (speech is rarely in the top 30%)
+        // 2. Stride by 4 to reduce loop iterations
         let sum = 0;
-        for (let i = 0; i < bufferLength; i++) {
+        let count = 0;
+        const limit = Math.floor(dataArray.length * 0.7); 
+        for (let i = 0; i < limit; i += 4) { 
           sum += dataArray[i];
+          count++;
         }
-        const avg = sum / bufferLength;
-        const pulse = (avg / 255);
-
-        // --- Layer 1: Outer Glow ---
-        // We limit the gradient creation to only when necessary, but it's cheap enough here.
-        const gradient = ctx.createRadialGradient(centerX, centerY, radius * 0.5, centerX, centerY, radius * 2);
-        gradient.addColorStop(0, `${color}20`); // Low opacity hex
-        gradient.addColorStop(1, 'transparent');
-        ctx.fillStyle = gradient;
-        ctx.globalAlpha = 0.3 + (pulse * 0.5);
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius * 2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.globalAlpha = 1.0;
-
-        // --- Layer 2: Frequency Rings ---
-        ctx.beginPath();
+        const avg = count > 0 ? sum / count : 0;
         
-        // Optimization: Stride by 2. We don't need 128 points for a small visualizer. 
-        // 64 points is visually indistinguishable and 2x faster to draw.
-        const stride = 2; 
-        
-        for (let i = 0; i < bufferLength; i += stride) {
-          const value = dataArray[i];
-          const offset = (value / 255) * (radius * 0.6);
-          const r = radius + offset;
-          
-          // Use lookup tables
-          const x = centerX + cosTable[i] * r;
-          const y = centerY + sinTable[i] * r;
+        // Normalize volume (0.0 to 1.0)
+        // Squaring it creates a more dynamic "pop" effect for loud sounds
+        const rawVolume = avg / 255;
+        const volume = rawVolume * rawVolume; 
 
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
+        // --- Simplified "Orb" Rendering (O(1) complexity) ---
+
+        // 1. Glow (Fast fill with low opacity, no gradients)
+        const glowRadius = baseRadius * 1.5 + (volume * baseRadius * 4);
+        if (glowRadius > 0) {
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, Math.min(glowRadius, maxRadius), 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.globalAlpha = 0.15;
+            ctx.fill();
         }
-        
-        // Close the path manually to ensure the last point connects to start
-        ctx.closePath();
+
+        // 2. Outer Ring (Stroke)
+        const outerRadius = baseRadius * 1.2 + (volume * baseRadius * 2);
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, Math.min(outerRadius, maxRadius * 0.9), 0, Math.PI * 2);
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.6;
         ctx.stroke();
 
-        // Ring 2 (Smoothed Inner Circle)
+        // 3. Core (Solid Fill)
+        const coreRadius = baseRadius + (volume * baseRadius);
         ctx.beginPath();
-        ctx.arc(centerX, centerY, radius * 0.8 + (pulse * 20), 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-
-        // --- Layer 3: Core ---
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius * 0.4 + (pulse * 10), 0, Math.PI * 2);
+        ctx.arc(centerX, centerY, coreRadius, 0, Math.PI * 2);
         ctx.fillStyle = color;
+        ctx.globalAlpha = 0.9;
         ctx.fill();
+
+        // Reset settings
+        ctx.globalAlpha = 1.0;
       }
 
       animationFrameRef.current = requestAnimationFrame(render);
