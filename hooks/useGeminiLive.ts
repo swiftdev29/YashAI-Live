@@ -23,9 +23,7 @@ export const useGeminiLive = () => {
   // Video References
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoStreamRef = useRef<MediaStream | null>(null);
-  const videoIntervalRef = useRef<number | null>(null);
-  const isProcessingFrameRef = useRef<boolean>(false);
-
+  
   // Session Management
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const nextStartTimeRef = useRef<number>(0);
@@ -33,10 +31,6 @@ export const useGeminiLive = () => {
   const groundingTimeoutRef = useRef<any>(null);
 
   const stopVideo = useCallback(() => {
-    if (videoIntervalRef.current) {
-      clearInterval(videoIntervalRef.current);
-      videoIntervalRef.current = null;
-    }
     if (videoStreamRef.current) {
       videoStreamRef.current.getTracks().forEach(track => track.stop());
       videoStreamRef.current = null;
@@ -45,16 +39,12 @@ export const useGeminiLive = () => {
       videoRef.current.srcObject = null;
     }
     setIsVideoActive(false);
-    isProcessingFrameRef.current = false;
   }, []);
 
   const startVideo = useCallback(async (mode: "user" | "environment" = facingMode) => {
-    // If already active and requesting same mode, do nothing
-    // If active and requesting different mode, we need to restart
     if (isVideoActive && videoStreamRef.current) {
        const currentTrack = videoStreamRef.current.getVideoTracks()[0];
        const currentMode = currentTrack.getSettings().facingMode;
-       // If we are already in the correct mode, don't restart
        if (currentMode === mode || (!currentMode && mode === 'user')) return; 
        
        stopVideo(); 
@@ -76,76 +66,10 @@ export const useGeminiLive = () => {
       }
       
       setIsVideoActive(true);
-
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      
-      // LATENCY FIX:
-      // 1. Reduced JPEG quality to 0.6
-      // 2. Implemented frame dropping (isProcessingFrameRef)
-      // 3. Downscale if image is too large
-      const JPEG_QUALITY = 0.6; 
-
-      videoIntervalRef.current = window.setInterval(async () => {
-        if (!ctx || !videoRef.current || !sessionPromiseRef.current) return;
-        if (connectionState !== ConnectionState.CONNECTED) return;
-        
-        // DROP FRAME if previous one is still processing
-        if (isProcessingFrameRef.current) return;
-        isProcessingFrameRef.current = true;
-
-        try {
-            const videoWidth = videoRef.current.videoWidth;
-            const videoHeight = videoRef.current.videoHeight;
-            
-            // Limit max dimension to 480px for speed
-            const MAX_DIMENSION = 480;
-            const scale = Math.min(1, MAX_DIMENSION / Math.max(videoWidth, videoHeight));
-            
-            canvas.width = videoWidth * scale;
-            canvas.height = videoHeight * scale;
-            
-            ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-
-            const base64Data = await new Promise<string | null>((resolve) => {
-                canvas.toBlob(async (blob) => {
-                    if (blob) {
-                         // We can assume blobToBase64 is fast, but waiting for it here
-                         try {
-                           const b64 = await blobToBase64(blob);
-                           resolve(b64);
-                         } catch {
-                           resolve(null);
-                         }
-                    } else {
-                        resolve(null);
-                    }
-                }, 'image/jpeg', JPEG_QUALITY);
-            });
-
-            if (base64Data) {
-                 const session = await sessionPromiseRef.current;
-                 session.sendRealtimeInput({
-                      media: {
-                        mimeType: 'image/jpeg',
-                        data: base64Data
-                      }
-                 });
-            }
-        } catch(e) {
-            console.debug("Frame capture error", e);
-        } finally {
-            isProcessingFrameRef.current = false;
-        }
-
-      }, 200); // Faster polling, but safeguarded by isProcessingFrameRef
-
     } catch (e) {
       console.error("Failed to start video", e);
-      // Fallback: If environment camera fails, try user camera
       if (mode === 'environment') {
         console.warn("Falling back to user camera");
-        // Update state to reflect fallback
         setFacingMode('user');
         startVideo('user');
       } else {
@@ -154,6 +78,73 @@ export const useGeminiLive = () => {
       }
     }
   }, [connectionState, isVideoActive, stopVideo, facingMode]);
+
+  // Video Streaming Loop
+  // This replaces the previous setInterval to ensure we never queue frames.
+  // We only schedule the next frame AFTER the current one has been sent.
+  useEffect(() => {
+    let isMounted = true;
+    let timeoutId: any;
+
+    const captureAndSendFrame = async () => {
+        if (!isMounted || !isVideoActive || connectionState !== ConnectionState.CONNECTED || !videoRef.current || !sessionPromiseRef.current) {
+            return;
+        }
+
+        try {
+            const video = videoRef.current;
+            if (video.videoWidth > 0 && video.videoHeight > 0) {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                    // Downscale to 360p max for speed/latency optimization
+                    const MAX_WIDTH = 360; 
+                    const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
+                    canvas.width = video.videoWidth * scale;
+                    canvas.height = video.videoHeight * scale;
+
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                    const base64 = await new Promise<string | null>((resolve) => {
+                         canvas.toBlob((blob) => {
+                             if (blob) {
+                                 blobToBase64(blob).then(resolve).catch(() => resolve(null));
+                             } else {
+                                 resolve(null);
+                             }
+                         }, 'image/jpeg', 0.5); // Low quality for speed
+                    });
+
+                    if (base64) {
+                        const session = await sessionPromiseRef.current;
+                        await session.sendRealtimeInput({
+                            media: { mimeType: 'image/jpeg', data: base64 }
+                        });
+                    }
+                }
+            }
+        } catch (e) {
+            console.debug("Frame capture/send error:", e);
+        }
+
+        // Schedule next frame only if still active
+        if (isMounted && isVideoActive && connectionState === ConnectionState.CONNECTED) {
+            // 600ms delay ~ 1.5 FPS. 
+            // This ensures the buffer is cleared before we try to send again.
+            // This fixes the "lag" where the model sees old frames.
+            timeoutId = setTimeout(captureAndSendFrame, 600);
+        }
+    };
+
+    if (isVideoActive && connectionState === ConnectionState.CONNECTED) {
+        captureAndSendFrame();
+    }
+
+    return () => {
+        isMounted = false;
+        clearTimeout(timeoutId);
+    };
+  }, [isVideoActive, connectionState]);
 
   const toggleVideo = useCallback(() => {
     if (isVideoActive) {
@@ -166,10 +157,7 @@ export const useGeminiLive = () => {
   const switchCamera = useCallback(() => {
     const newMode = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(newMode);
-    // Restart video with new mode if it's currently active
     if (isVideoActive) {
-        // We need to pass the new mode explicitly because state update might be async/batched
-        // although inside useCallback it reads from scope, but here we invoke startVideo directly
         startVideo(newMode);
     }
   }, [facingMode, isVideoActive, startVideo]);
