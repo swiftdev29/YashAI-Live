@@ -141,8 +141,8 @@ export const useGeminiLive = () => {
 
       const outputAnalyser = outputCtx.createAnalyser();
       outputAnalyser.fftSize = 256;
-      // Visualization Optimization: Lower smoothing for "snappier" feel with simple orb
-      outputAnalyser.smoothingTimeConstant = 0.4;
+      // Visualization Optimization: Smoother animation for the waveform visualizer
+      outputAnalyser.smoothingTimeConstant = 0.8;
       outputAnalyserRef.current = outputAnalyser;
       
       // Volume Boost: Create a gain node to increase the output volume
