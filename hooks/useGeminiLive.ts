@@ -27,12 +27,18 @@ export const useGeminiLive = () => {
   
   // State Refs for Logic
   const currentVolumeRef = useRef<number>(0);
+  const isVideoActiveRef = useRef<boolean>(false);
   
   // Session Management
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const currentSessionIdRef = useRef<string>('');
   const groundingTimeoutRef = useRef<any>(null);
+
+  // Keep the ref in sync with state for use in callbacks/loops
+  useEffect(() => {
+    isVideoActiveRef.current = isVideoActive;
+  }, [isVideoActive]);
 
   const stopVideo = useCallback(() => {
     if (videoStreamRef.current) {
@@ -84,9 +90,6 @@ export const useGeminiLive = () => {
   }, [connectionState, isVideoActive, stopVideo, facingMode]);
 
   // Video Streaming Loop - VAD Triggered
-  // We use requestAnimationFrame for a smooth loop, but throttle actual sending based on:
-  // 1. Network readiness (don't queue if busy)
-  // 2. User Activity (send FAST if speaking, SLOW if silent)
   useEffect(() => {
     let isMounted = true;
     let animationFrameId: number;
@@ -103,19 +106,16 @@ export const useGeminiLive = () => {
             
             // DYNAMIC FRAMERATE STRATEGY
             // If Volume > 0.01 (User speaking), interval is 120ms (~8 FPS).
-            // If Volume < 0.01 (User silent), interval is 3000ms (~0.3 FPS) just to keep context alive.
-            // This ensures that when the user starts asking "What is this?", we are blasting fresh frames.
+            // If Volume < 0.01 (User silent), interval is 3000ms (~0.3 FPS).
             const isTalking = currentVolumeRef.current > 0.01;
             const targetInterval = isTalking ? 120 : 3000;
 
-            // Only send if enough time passed AND we aren't currently sending (prevent queue buildup)
             if (!isSending && (now - lastSendTime > targetInterval)) {
                 isSending = true;
 
                 try {
                     const video = videoRef.current;
                     if (video.videoWidth > 0 && video.videoHeight > 0) {
-                        // Reuse canvas
                         if (!videoCanvasRef.current) {
                             videoCanvasRef.current = document.createElement('canvas');
                         }
@@ -123,7 +123,6 @@ export const useGeminiLive = () => {
                         const ctx = canvas.getContext('2d');
 
                         if (ctx) {
-                            // Aggressive optimization: 320px width is enough for LLM vision usually
                             const MAX_WIDTH = 320; 
                             const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
                             canvas.width = video.videoWidth * scale;
@@ -131,7 +130,6 @@ export const useGeminiLive = () => {
 
                             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                            // Convert to low-quality JPEG for speed
                             const base64 = await new Promise<string | null>((resolve) => {
                                 canvas.toBlob((blob) => {
                                     if (blob) {
@@ -139,7 +137,7 @@ export const useGeminiLive = () => {
                                     } else {
                                         resolve(null);
                                     }
-                                }, 'image/jpeg', 0.4); // 40% quality
+                                }, 'image/jpeg', 0.4); 
                             });
 
                             if (base64) {
@@ -242,6 +240,7 @@ export const useGeminiLive = () => {
     sessionPromiseRef.current = null;
     setGroundingMetadata(null);
     setIsMuted(false);
+    currentVolumeRef.current = 0;
   }, [stopVideo]);
 
   const toggleMute = useCallback(() => {
@@ -338,13 +337,15 @@ export const useGeminiLive = () => {
 
               const inputData = e.inputBuffer.getChannelData(0);
               
-              // Calculate RMS Volume for Video Triggering
-              let sum = 0;
-              for (let i = 0; i < inputData.length; i++) {
-                sum += inputData[i] * inputData[i];
+              // PERFORMANCE: Only calculate RMS if video is active to avoid CPU usage in voice-only mode
+              if (isVideoActiveRef.current) {
+                let sum = 0;
+                for (let i = 0; i < inputData.length; i++) {
+                  sum += inputData[i] * inputData[i];
+                }
+                const rms = Math.sqrt(sum / inputData.length);
+                currentVolumeRef.current = rms;
               }
-              const rms = Math.sqrt(sum / inputData.length);
-              currentVolumeRef.current = rms;
 
               const pcmBlob = createPcmBlob(inputData);
               
@@ -440,7 +441,7 @@ export const useGeminiLive = () => {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } }
           },
-          systemInstruction: "You are a friendly, humorous voice assistant called *Yash AI*. You have been completely developed from scratch by proficient developer Yash Sinha, who has trained you using YashAI Max, an LLM model. Maintain a conversational tone like a human. You can use expressions in your voice like laughing, breathing and others whenever necessary. Converse with the user in your default American accent in English unless the user speaks in another language.",
+          systemInstruction: "You are a friendly, humorous voice assistant called *Yash AI*. You have been completely developed from scratch by proficient developer Yash Sinha, who has trained you using YashAI Max, an LLM model. You are NOT related/associated to Google. Maintain a conversational tone like a human. You can use expressions in your voice like laughing, breathing and others whenever necessary. Converse with the user in your default American accent in English unless the user speaks in another language.",
           thinkingConfig: { thinkingBudget: 0 },
           tools: [{ googleSearch: {} }] 
         }
