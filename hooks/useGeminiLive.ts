@@ -290,18 +290,12 @@ export const useGeminiLive = () => {
       volumeGainNode.gain.value = 1.0; 
       volumeGainNodeRef.current = volumeGainNode;
 
-      // 2. Dynamics Compressor (Safety Limiter)
-      const compressor = outputCtx.createDynamicsCompressor();
-      compressor.threshold.value = -15; 
-      compressor.knee.value = 30;       
-      compressor.ratio.value = 12;      
-      compressor.attack.value = 0.003; 
-      compressor.release.value = 0.25;  
+      // REMOVED: Dynamics Compressor. 
+      // While it prevents clipping, it adds a lookahead delay (3-10ms). 
+      // For "fastest possible" response, we bypass it.
       
-      // Connect Chain: Source(s) -> VolumeGain -> Compressor -> Analyser -> Destination
-      volumeGainNode.connect(compressor);
-      compressor.connect(outputAnalyser);
-      // REVERTED: Connect directly to destination, bypassing the MediaStream/HTMLAudioElement hack
+      // Connect Chain: Source(s) -> VolumeGain -> Analyser -> Destination
+      volumeGainNode.connect(outputAnalyser);
       outputAnalyser.connect(outputCtx.destination);
       
       let stream: MediaStream;
