@@ -276,8 +276,6 @@ export const useGeminiLive = () => {
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         inputCtx = new AudioContextClass({ sampleRate: 16000 });
         // REMOVED: { sampleRate: 24000 } to fix Android playback artifacts
-        // Allowing the system to choose the native sample rate (often 48kHz on Android) 
-        // prevents stuttering and pitch shifting during the initial playback stream.
         outputCtx = new AudioContextClass({ latencyHint: 'interactive' });
       } catch (e) {
         setError("Could not initialize audio system.");
@@ -302,18 +300,17 @@ export const useGeminiLive = () => {
       
       // 1. Gain Node (Volume/Ducking)
       const volumeGainNode = outputCtx.createGain();
-      // BOOST: Initial value set to 3.5 (350% volume) to overcome weak Android output
-      // The subsequent CompressorNode will prevent this from clipping on loud devices.
-      volumeGainNode.gain.value = 3.5; 
+      // CHANGED: Reset to 1.0 (Unit Gain) to prevent Android clipping/stutter
+      volumeGainNode.gain.value = 1.0; 
       volumeGainNodeRef.current = volumeGainNode;
 
       // 2. Dynamics Compressor (Safety Limiter)
-      // This allows us to use high gain for quiet devices without blowing out speakers on loud devices.
+      // Kept as safety, but with standard gain it shouldn't engage aggressively
       const compressor = outputCtx.createDynamicsCompressor();
-      compressor.threshold.value = -15; // Start compressing early
-      compressor.knee.value = 30;       // Soft knee for natural sound
-      compressor.ratio.value = 12;      // High compression ratio (limiting)
-      compressor.attack.value = 0.003;  // Fast attack to catch spikes
+      compressor.threshold.value = -15; 
+      compressor.knee.value = 30;       
+      compressor.ratio.value = 12;      
+      compressor.attack.value = 0.003; 
       compressor.release.value = 0.25;  
       
       // 3. Media Destination (for <audio> tag)
@@ -413,8 +410,8 @@ export const useGeminiLive = () => {
                 
                 if (aiIsTalking && speechAccumulatorRef.current > 2) {
                     if (volumeGainNodeRef.current) {
-                        // Ducking: drop to 10% of the BOOSTED volume (3.5 * 0.1 = 0.35)
-                        volumeGainNodeRef.current.gain.setTargetAtTime(0.35, outputCtx.currentTime, 0.05);
+                        // Ducking: drop to 20% of the volume
+                        volumeGainNodeRef.current.gain.setTargetAtTime(0.2, outputCtx.currentTime, 0.05);
                     }
                 }
 
@@ -448,8 +445,8 @@ export const useGeminiLive = () => {
                     silenceTimerRef.current = null;
                     
                     if (volumeGainNodeRef.current) {
-                         // Restore to full BOOSTED volume (3.5)
-                         volumeGainNodeRef.current.gain.setTargetAtTime(1, outputCtx.currentTime, 0.2);
+                         // Restore to full volume (1.0)
+                         volumeGainNodeRef.current.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.2);
                     }
 
                   }, 500); 
@@ -485,8 +482,8 @@ export const useGeminiLive = () => {
                
                if (volumeGainNodeRef.current && outputAudioContextRef.current) {
                   volumeGainNodeRef.current.gain.cancelScheduledValues(outputAudioContextRef.current.currentTime);
-                  // Restore to full BOOSTED volume (3.5)
-                  volumeGainNodeRef.current.gain.value = 1;
+                  // Restore to full volume (1.0)
+                  volumeGainNodeRef.current.gain.value = 1.0;
                }
              }
 
@@ -512,12 +509,8 @@ export const useGeminiLive = () => {
                }
 
                const now = ctx.currentTime;
-               // If the scheduler is behind the current time (e.g. fresh start or buffer underrun),
-               // push the schedule forward by 80ms to give the hardware a chance to wake up.
-               // This prevents the "stutter" at the very beginning of speech.
-               if (nextStartTimeRef.current < now) {
-                  nextStartTimeRef.current = now + 0.08; 
-               }
+               // Standard scheduling without extra lookahead delay
+               nextStartTimeRef.current = Math.max(nextStartTimeRef.current, now);
 
                const audioBuffer = await decodeAudioData(
                  base64ToBytes(base64Audio),
