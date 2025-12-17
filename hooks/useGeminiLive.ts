@@ -524,7 +524,7 @@ export const useGeminiLive = () => {
           },
           realtimeInputConfig: {
             automaticActivityDetection: {
-              silenceDurationMs: 50
+              silenceDurationMs: 80
             }
 
           },
