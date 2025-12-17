@@ -290,11 +290,8 @@ export const useGeminiLive = () => {
       volumeGainNode.gain.value = 1.0; 
       volumeGainNodeRef.current = volumeGainNode;
 
-      // REMOVED: Dynamics Compressor. 
-      // While it prevents clipping, it adds a lookahead delay (3-10ms). 
-      // For "fastest possible" response, we bypass it.
-      
-      // Connect Chain: Source(s) -> VolumeGain -> Analyser -> Destination
+      // REMOVED: Dynamics Compressor for lowest possible latency.
+      // Connecting directly: Source -> VolumeGain -> Analyser -> Destination
       volumeGainNode.connect(outputAnalyser);
       outputAnalyser.connect(outputCtx.destination);
       
