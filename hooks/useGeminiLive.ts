@@ -275,8 +275,9 @@ export const useGeminiLive = () => {
       try {
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         inputCtx = new AudioContextClass({ sampleRate: 16000 });
-        // REMOVED: { sampleRate: 24000 } to fix Android playback artifacts
-        outputCtx = new AudioContextClass({ latencyHint: 'interactive' });
+        // CHANGED: Use 'balanced' latency. 'interactive' is too aggressive for many Android devices
+        // causing buffer underruns and stuttering. 'balanced' provides a larger safety buffer.
+        outputCtx = new AudioContextClass({ latencyHint: 'balanced' });
       } catch (e) {
         setError("Could not initialize audio system.");
         setConnectionState(ConnectionState.ERROR);
@@ -300,12 +301,10 @@ export const useGeminiLive = () => {
       
       // 1. Gain Node (Volume/Ducking)
       const volumeGainNode = outputCtx.createGain();
-      // CHANGED: Reset to 1.0 (Unit Gain) to prevent Android clipping/stutter
       volumeGainNode.gain.value = 1.0; 
       volumeGainNodeRef.current = volumeGainNode;
 
       // 2. Dynamics Compressor (Safety Limiter)
-      // Kept as safety, but with standard gain it shouldn't engage aggressively
       const compressor = outputCtx.createDynamicsCompressor();
       compressor.threshold.value = -15; 
       compressor.knee.value = 30;       
@@ -384,7 +383,10 @@ export const useGeminiLive = () => {
             source.connect(inputGain);
             inputGain.connect(inputAnalyser);
             
-            const scriptProcessor = inputCtx.createScriptProcessor(512, 1, 1);
+            // CHANGED: Increased buffer size from 512 to 2048.
+            // 512 samples @ 16kHz is ~32ms. This is too fast for Android's main thread to handle reliably,
+            // causing jitter. 2048 is ~128ms, which is much more stable and efficient.
+            const scriptProcessor = inputCtx.createScriptProcessor(2048, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
 
             scriptProcessor.onaudioprocess = (e) => {
@@ -408,9 +410,10 @@ export const useGeminiLive = () => {
               if (rms > activeThreshold) {
                 speechAccumulatorRef.current += 1;
                 
-                if (aiIsTalking && speechAccumulatorRef.current > 2) {
+                // Adjust accumulator threshold for larger buffer size (2048)
+                // Was > 2 for 512 buffers (~96ms). Now > 1 for 2048 buffers (~128ms)
+                if (aiIsTalking && speechAccumulatorRef.current > 1) {
                     if (volumeGainNodeRef.current) {
-                        // Ducking: drop to 20% of the volume
                         volumeGainNodeRef.current.gain.setTargetAtTime(0.2, outputCtx.currentTime, 0.05);
                     }
                 }
@@ -445,7 +448,6 @@ export const useGeminiLive = () => {
                     silenceTimerRef.current = null;
                     
                     if (volumeGainNodeRef.current) {
-                         // Restore to full volume (1.0)
                          volumeGainNodeRef.current.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.2);
                     }
 
@@ -482,7 +484,6 @@ export const useGeminiLive = () => {
                
                if (volumeGainNodeRef.current && outputAudioContextRef.current) {
                   volumeGainNodeRef.current.gain.cancelScheduledValues(outputAudioContextRef.current.currentTime);
-                  // Restore to full volume (1.0)
                   volumeGainNodeRef.current.gain.value = 1.0;
                }
              }
@@ -503,13 +504,11 @@ export const useGeminiLive = () => {
                const ctx = outputAudioContextRef.current;
                if (!ctx) return;
 
-               // Ensure the context is running (sometimes it suspends on mobile)
                if (ctx.state === 'suspended') {
                  try { await ctx.resume(); } catch(e) {}
                }
 
                const now = ctx.currentTime;
-               // Standard scheduling without extra lookahead delay
                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, now);
 
                const audioBuffer = await decodeAudioData(
@@ -521,7 +520,6 @@ export const useGeminiLive = () => {
 
                const source = ctx.createBufferSource();
                source.buffer = audioBuffer;
-               // Connect sources to the Gain Node (which is now part of the chain)
                source.connect(volumeGainNode);
 
                source.addEventListener('ended', () => {
