@@ -502,7 +502,7 @@ export const useGeminiLive = () => {
             }
           },
           onerror: (e) => {
-            console.error(`[${sessionId}] Gemini Live Error`, e);
+            console.error(`[${sessionId}] YashAI Live Error`, e);
             if (currentSessionIdRef.current === sessionId) {
               setError("Connection Error. Please try again.");
               setConnectionState(ConnectionState.ERROR);
@@ -524,7 +524,7 @@ export const useGeminiLive = () => {
           },
           realtimeInputConfig: {
             automaticActivityDetection: {
-              silenceDurationMs: 100
+              silenceDurationMs: 80
             }
 
           },
