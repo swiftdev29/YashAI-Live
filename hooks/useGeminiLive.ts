@@ -381,7 +381,7 @@ export const useGeminiLive = () => {
             
             // --- Input Gain Stage ---
             const inputGain = inputCtx.createGain();
-            inputGain.gain.value = 1.5;
+            inputGain.gain.value = 1;
             source.connect(inputGain);
             inputGain.connect(inputAnalyser);
             
