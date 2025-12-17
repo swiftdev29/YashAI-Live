@@ -304,7 +304,7 @@ export const useGeminiLive = () => {
       const volumeGainNode = outputCtx.createGain();
       // BOOST: Initial value set to 3.5 (350% volume) to overcome weak Android output
       // The subsequent CompressorNode will prevent this from clipping on loud devices.
-      volumeGainNode.gain.value = 1; 
+      volumeGainNode.gain.value = 3.5; 
       volumeGainNodeRef.current = volumeGainNode;
 
       // 2. Dynamics Compressor (Safety Limiter)
@@ -449,7 +449,7 @@ export const useGeminiLive = () => {
                     
                     if (volumeGainNodeRef.current) {
                          // Restore to full BOOSTED volume (3.5)
-                         volumeGainNodeRef.current.gain.setTargetAtTime(3.5, outputCtx.currentTime, 0.2);
+                         volumeGainNodeRef.current.gain.setTargetAtTime(1, outputCtx.currentTime, 0.2);
                     }
 
                   }, 500); 
@@ -486,7 +486,7 @@ export const useGeminiLive = () => {
                if (volumeGainNodeRef.current && outputAudioContextRef.current) {
                   volumeGainNodeRef.current.gain.cancelScheduledValues(outputAudioContextRef.current.currentTime);
                   // Restore to full BOOSTED volume (3.5)
-                  volumeGainNodeRef.current.gain.value = 3.5;
+                  volumeGainNodeRef.current.gain.value = 1;
                }
              }
 
@@ -506,7 +506,18 @@ export const useGeminiLive = () => {
                const ctx = outputAudioContextRef.current;
                if (!ctx) return;
 
-               nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
+               // Ensure the context is running (sometimes it suspends on mobile)
+               if (ctx.state === 'suspended') {
+                 try { await ctx.resume(); } catch(e) {}
+               }
+
+               const now = ctx.currentTime;
+               // If the scheduler is behind the current time (e.g. fresh start or buffer underrun),
+               // push the schedule forward by 80ms to give the hardware a chance to wake up.
+               // This prevents the "stutter" at the very beginning of speech.
+               if (nextStartTimeRef.current < now) {
+                  nextStartTimeRef.current = now + 0.08; 
+               }
 
                const audioBuffer = await decodeAudioData(
                  base64ToBytes(base64Audio),
