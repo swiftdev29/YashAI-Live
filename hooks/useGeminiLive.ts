@@ -302,7 +302,7 @@ export const useGeminiLive = () => {
       const volumeGainNode = outputCtx.createGain();
       // BOOST: Initial value set to 3.5 (350% volume) to overcome weak Android output
       // The subsequent CompressorNode will prevent this from clipping on loud devices.
-      volumeGainNode.gain.value = 3.5; 
+      volumeGainNode.gain.value = 1.5; 
       volumeGainNodeRef.current = volumeGainNode;
 
       // 2. Dynamics Compressor (Safety Limiter)
