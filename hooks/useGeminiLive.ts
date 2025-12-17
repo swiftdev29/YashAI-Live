@@ -24,7 +24,6 @@ export const useGeminiLive = () => {
   const volumeGainNodeRef = useRef<GainNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const audioOutputRef = useRef<HTMLAudioElement | null>(null);
   
   // Video References
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -207,17 +206,6 @@ export const useGeminiLive = () => {
     });
     sourcesRef.current.clear();
     
-    // Clean up Audio Output Element (Speaker Fix)
-    if (audioOutputRef.current) {
-      audioOutputRef.current.pause();
-      audioOutputRef.current.srcObject = null;
-      // Remove from DOM if appended
-      if (audioOutputRef.current.parentNode) {
-        audioOutputRef.current.parentNode.removeChild(audioOutputRef.current);
-      }
-      audioOutputRef.current = null;
-    }
-
     if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     if (aiSpeakingTimerRef.current) clearTimeout(aiSpeakingTimerRef.current);
@@ -275,9 +263,7 @@ export const useGeminiLive = () => {
       try {
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         inputCtx = new AudioContextClass({ sampleRate: 16000 });
-        // CHANGED: Use 'balanced' latency. 'interactive' is too aggressive for many Android devices
-        // causing buffer underruns and stuttering. 'balanced' provides a larger safety buffer.
-        outputCtx = new AudioContextClass({ latencyHint: 'balanced' });
+        outputCtx = new AudioContextClass({ latencyHint: 'interactive' });
       } catch (e) {
         setError("Could not initialize audio system.");
         setConnectionState(ConnectionState.ERROR);
@@ -312,24 +298,11 @@ export const useGeminiLive = () => {
       compressor.attack.value = 0.003; 
       compressor.release.value = 0.25;  
       
-      // 3. Media Destination (for <audio> tag)
-      const audioDestination = outputCtx.createMediaStreamDestination();
-      
       // Connect Chain: Source(s) -> VolumeGain -> Compressor -> Analyser -> Destination
       volumeGainNode.connect(compressor);
       compressor.connect(outputAnalyser);
-      outputAnalyser.connect(audioDestination);
-      
-      // 4. HTML Audio Element (Speaker Fix)
-      const audioEl = new Audio();
-      audioEl.srcObject = audioDestination.stream;
-      audioEl.autoplay = true;
-      (audioEl as any).playsInline = true; 
-      audioEl.muted = false; // Explicitly unmute
-      audioEl.volume = 1.0;
-      audioEl.style.display = 'none';
-      document.body.appendChild(audioEl);
-      audioOutputRef.current = audioEl;
+      // REVERTED: Connect directly to destination, bypassing the MediaStream/HTMLAudioElement hack
+      outputAnalyser.connect(outputCtx.destination);
       
       let stream: MediaStream;
       try {
@@ -352,11 +325,6 @@ export const useGeminiLive = () => {
       try {
         if (inputCtx.state === 'suspended') await inputCtx.resume();
         if (outputCtx.state === 'suspended') await outputCtx.resume();
-        // Force play interaction for Android
-        const p = audioEl.play();
-        if (p !== undefined) {
-            p.catch(e => console.log("Playback start error (benign if handled):", e));
-        }
       } catch (e) {
         console.debug("Audio play failed", e);
       }
@@ -383,10 +351,7 @@ export const useGeminiLive = () => {
             source.connect(inputGain);
             inputGain.connect(inputAnalyser);
             
-            // CHANGED: Increased buffer size from 512 to 2048.
-            // 512 samples @ 16kHz is ~32ms. This is too fast for Android's main thread to handle reliably,
-            // causing jitter. 2048 is ~128ms, which is much more stable and efficient.
-            const scriptProcessor = inputCtx.createScriptProcessor(2048, 1, 1);
+            const scriptProcessor = inputCtx.createScriptProcessor(512, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
 
             scriptProcessor.onaudioprocess = (e) => {
@@ -410,10 +375,9 @@ export const useGeminiLive = () => {
               if (rms > activeThreshold) {
                 speechAccumulatorRef.current += 1;
                 
-                // Adjust accumulator threshold for larger buffer size (2048)
-                // Was > 2 for 512 buffers (~96ms). Now > 1 for 2048 buffers (~128ms)
-                if (aiIsTalking && speechAccumulatorRef.current > 1) {
+                if (aiIsTalking && speechAccumulatorRef.current > 2) {
                     if (volumeGainNodeRef.current) {
+                        // Ducking: drop to 20% of the volume
                         volumeGainNodeRef.current.gain.setTargetAtTime(0.2, outputCtx.currentTime, 0.05);
                     }
                 }
@@ -448,6 +412,7 @@ export const useGeminiLive = () => {
                     silenceTimerRef.current = null;
                     
                     if (volumeGainNodeRef.current) {
+                         // Restore to full volume (1.0)
                          volumeGainNodeRef.current.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.2);
                     }
 
@@ -484,6 +449,7 @@ export const useGeminiLive = () => {
                
                if (volumeGainNodeRef.current && outputAudioContextRef.current) {
                   volumeGainNodeRef.current.gain.cancelScheduledValues(outputAudioContextRef.current.currentTime);
+                  // Restore to full volume (1.0)
                   volumeGainNodeRef.current.gain.value = 1.0;
                }
              }
@@ -504,11 +470,13 @@ export const useGeminiLive = () => {
                const ctx = outputAudioContextRef.current;
                if (!ctx) return;
 
+               // Ensure the context is running (sometimes it suspends on mobile)
                if (ctx.state === 'suspended') {
                  try { await ctx.resume(); } catch(e) {}
                }
 
                const now = ctx.currentTime;
+               // Standard scheduling without extra lookahead delay
                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, now);
 
                const audioBuffer = await decodeAudioData(
@@ -520,6 +488,7 @@ export const useGeminiLive = () => {
 
                const source = ctx.createBufferSource();
                source.buffer = audioBuffer;
+               // Connect sources to the Gain Node (which is now part of the chain)
                source.connect(volumeGainNode);
 
                source.addEventListener('ended', () => {
