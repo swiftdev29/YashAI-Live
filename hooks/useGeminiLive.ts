@@ -275,8 +275,10 @@ export const useGeminiLive = () => {
       try {
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         inputCtx = new AudioContextClass({ sampleRate: 16000 });
-        // Use 'interactive' for low latency
-        outputCtx = new AudioContextClass({ sampleRate: 24000, latencyHint: 'interactive' });
+        // REMOVED: { sampleRate: 24000 } to fix Android playback artifacts
+        // Allowing the system to choose the native sample rate (often 48kHz on Android) 
+        // prevents stuttering and pitch shifting during the initial playback stream.
+        outputCtx = new AudioContextClass({ latencyHint: 'interactive' });
       } catch (e) {
         setError("Could not initialize audio system.");
         setConnectionState(ConnectionState.ERROR);
@@ -302,7 +304,7 @@ export const useGeminiLive = () => {
       const volumeGainNode = outputCtx.createGain();
       // BOOST: Initial value set to 3.5 (350% volume) to overcome weak Android output
       // The subsequent CompressorNode will prevent this from clipping on loud devices.
-      volumeGainNode.gain.value = 1.5; 
+      volumeGainNode.gain.value = 3.5; 
       volumeGainNodeRef.current = volumeGainNode;
 
       // 2. Dynamics Compressor (Safety Limiter)
@@ -381,7 +383,7 @@ export const useGeminiLive = () => {
             
             // --- Input Gain Stage ---
             const inputGain = inputCtx.createGain();
-            inputGain.gain.value = 1;
+            inputGain.gain.value = 1.5;
             source.connect(inputGain);
             inputGain.connect(inputAnalyser);
             
