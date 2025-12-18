@@ -8,7 +8,7 @@ const AUTH_STORAGE_KEY = 'yashai_auth_session';
 const AUTH_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
 
 const MainApp: React.FC = () => {
-  const { connect, disconnect, connectionState, error, groundingMetadata, inputAnalyser, outputAnalyser, isMuted, toggleMute, videoRef, isVideoActive, videoSource, toggleVideo, toggleScreenShare, switchCamera, isUserSpeaking, isAiSpeaking } = useGeminiLive();
+  const { connect, disconnect, connectionState, error, groundingMetadata, inputAnalyser, outputAnalyser, isMuted, toggleMute, videoRef, isVideoActive, videoSource, toggleVideo, toggleScreenShare, switchCamera, isUserSpeaking, isAiSpeaking, isThinkingMode, toggleThinkingMode } = useGeminiLive();
 
   const handleToggleConnect = () => {
     (connectionState === ConnectionState.CONNECTED || connectionState === ConnectionState.CONNECTING) ? disconnect() : connect();
@@ -33,6 +33,9 @@ const MainApp: React.FC = () => {
            <span className="font-semibold tracking-wider text-sm text-slate-200/90 font-mono uppercase">YashAI Voice</span>
         </div>
         <div className="flex items-center gap-3">
+            {connectionState === ConnectionState.CONNECTED && isThinkingMode && (
+                <div className="px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/30 text-blue-400 text-[8px] font-bold uppercase tracking-widest animate-pulse">Thinking Active</div>
+            )}
             <div className={`px-3 py-1 rounded-full border border-white/5 bg-white/5 backdrop-blur-md text-[10px] font-medium tracking-widest uppercase ${connectionState === ConnectionState.CONNECTED ? 'text-blue-400 border-blue-500/20' : 'text-slate-500'}`}>
                 {connectionState === ConnectionState.CONNECTED ? 'Live Session' : 'Standby'}
             </div>
@@ -79,12 +82,32 @@ const MainApp: React.FC = () => {
                 </button>
             </div>
 
-            <div className={`absolute flex flex-col items-center transition-all duration-500 ${connectionState !== ConnectionState.CONNECTED ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'}`}>
-                 <button onClick={handleToggleConnect} disabled={connectionState === ConnectionState.CONNECTING} className={`group flex items-center gap-3 px-8 py-4 rounded-full backdrop-blur-md border border-white/10 shadow-2xl ${connectionState === ConnectionState.ERROR ? 'bg-red-500/10 border-red-500/50' : 'bg-white/5 hover:bg-white/10 hover:scale-105'}`}>
-                    <div className={`w-3 h-3 rounded-full ${connectionState === ConnectionState.CONNECTING ? 'bg-yellow-400 animate-pulse' : (connectionState === ConnectionState.ERROR ? 'bg-red-500' : 'bg-blue-400')}`}></div>
-                    <span className="font-medium tracking-wide text-sm uppercase">{connectionState === ConnectionState.CONNECTING ? 'Connecting...' : 'Initialize'}</span>
-                </button>
-                {error && <p className="mt-4 text-[10px] text-red-400 bg-red-950/50 px-3 py-1 rounded-full border border-red-500/20">{error}</p>}
+            <div className={`absolute flex flex-col items-center gap-4 transition-all duration-500 ${connectionState !== ConnectionState.CONNECTED ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'}`}>
+                 <div className="flex items-center gap-2">
+                    <button 
+                      onClick={handleToggleConnect} 
+                      disabled={connectionState === ConnectionState.CONNECTING} 
+                      className={`group flex items-center gap-3 px-8 py-4 rounded-full backdrop-blur-md border border-white/10 shadow-2xl transition-all ${connectionState === ConnectionState.ERROR ? 'bg-red-500/10 border-red-500/50' : 'bg-white/5 hover:bg-white/10 hover:scale-105'}`}
+                    >
+                        <div className={`w-3 h-3 rounded-full ${connectionState === ConnectionState.CONNECTING ? 'bg-yellow-400 animate-pulse' : (connectionState === ConnectionState.ERROR ? 'bg-red-500' : 'bg-blue-400')}`}></div>
+                        <span className="font-medium tracking-wide text-sm uppercase">{connectionState === ConnectionState.CONNECTING ? 'Connecting...' : 'Initialize'}</span>
+                    </button>
+                    
+                    <button 
+                      onClick={toggleThinkingMode} 
+                      disabled={connectionState === ConnectionState.CONNECTING}
+                      title="Enable Reasoning (Thinking Mode)"
+                      className={`w-14 h-14 rounded-full flex items-center justify-center border transition-all ${isThinkingMode ? 'bg-blue-500/20 border-blue-500/40 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.3)]' : 'bg-white/5 border-white/10 text-slate-500 hover:bg-white/10'}`}
+                    >
+                        <svg className={`w-6 h-6 ${isThinkingMode ? 'animate-pulse' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                        </svg>
+                    </button>
+                 </div>
+                 {isThinkingMode && connectionState === ConnectionState.DISCONNECTED && (
+                    <p className="text-[10px] text-blue-400/80 font-medium tracking-wider uppercase animate-fade-in">Reasoning models enabled</p>
+                 )}
+                 {error && <p className="mt-4 text-[10px] text-red-400 bg-red-950/50 px-3 py-1 rounded-full border border-red-500/20">{error}</p>}
             </div>
         </div>
       </main>
@@ -109,7 +132,7 @@ const MainApp: React.FC = () => {
               </div>
           </div>
       )}
-      <style>{`.animate-slide-up { animation: slide-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; } @keyframes slide-up { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } } .scrollbar-hide::-webkit-scrollbar { display: none; }`}</style>
+      <style>{`.animate-slide-up { animation: slide-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; } @keyframes slide-up { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } } .animate-fade-in { animation: fadeIn 0.8s ease-out; } @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } } .scrollbar-hide::-webkit-scrollbar { display: none; }`}</style>
     </div>
   );
 };

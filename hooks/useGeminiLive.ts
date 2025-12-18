@@ -1,3 +1,4 @@
+
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { ConnectionState, GroundingMetadata } from '../types';
@@ -8,6 +9,7 @@ export const useGeminiLive = () => {
   const [error, setError] = useState<string | null>(null);
   const [groundingMetadata, setGroundingMetadata] = useState<GroundingMetadata | null>(null);
   const [isMuted, setIsMuted] = useState(false);
+  const [isThinkingMode, setIsThinkingMode] = useState(false);
   
   // Video States
   const [isVideoActive, setIsVideoActive] = useState(false);
@@ -56,12 +58,17 @@ export const useGeminiLive = () => {
   const aiSpeakingTimerRef = useRef<any>(null);
   const speechAccumulatorRef = useRef<number>(0);
 
+  // --- Fix: Declare ref for disconnect to resolve circular dependency and "used before declaration" error ---
+  const disconnectRef = useRef<() => Promise<void>>(null as any);
+
   // --- Media Session Helper for Backgrounding ---
   const updateMediaSession = useCallback((state: 'playing' | 'paused' | 'none') => {
     if ('mediaSession' in navigator) {
       if (state === 'none') {
         navigator.mediaSession.metadata = null;
         navigator.mediaSession.playbackState = 'none';
+        // Clear stop action handler when session ends
+        navigator.mediaSession.setActionHandler('stop', null);
         return;
       }
       navigator.mediaSession.metadata = new MediaMetadata({
@@ -70,7 +77,10 @@ export const useGeminiLive = () => {
         artwork: [{ src: 'https://raw.githubusercontent.com/swiftdev29/Jee-mains-checker/refs/heads/main/icon-512.svg', sizes: '512x512', type: 'image/svg+xml' }]
       });
       navigator.mediaSession.playbackState = state;
-      navigator.mediaSession.setActionHandler('stop', () => disconnect());
+      // --- Fix: Use disconnectRef inside the handler to avoid direct dependency on disconnect variable before its declaration ---
+      navigator.mediaSession.setActionHandler('stop', () => {
+        if (disconnectRef.current) disconnectRef.current();
+      });
     }
   }, []);
 
@@ -83,6 +93,46 @@ export const useGeminiLive = () => {
     }
     if (videoRef.current) videoRef.current.srcObject = null;
   }, []);
+
+  const disconnect = useCallback(async () => {
+    stopVideo();
+    updateMediaSession('none');
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    if (scriptProcessorRef.current) {
+      scriptProcessorRef.current.disconnect();
+      scriptProcessorRef.current = null;
+    }
+    sourcesRef.current.forEach(source => { try { source.stop(); } catch (e) {} });
+    sourcesRef.current.clear();
+    if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    if (aiSpeakingTimerRef.current) clearTimeout(aiSpeakingTimerRef.current);
+    if (inputAudioContextRef.current) {
+      try { await inputAudioContextRef.current.close(); } catch (e) {}
+      inputAudioContextRef.current = null;
+    }
+    if (outputAudioContextRef.current) {
+      try { await outputAudioContextRef.current.close(); } catch (e) {}
+      outputAudioContextRef.current = null;
+    }
+    setConnectionState(ConnectionState.DISCONNECTED);
+    nextStartTimeRef.current = 0;
+    activeSessionRef.current = null;
+    setGroundingMetadata(null);
+    setIsMuted(false);
+    setIsUserSpeaking(false);
+    setIsAiSpeaking(false);
+    isUserSpeakingRef.current = false;
+    currentVolumeRef.current = 0;
+  }, [stopVideo, updateMediaSession]);
+
+  // --- Fix: Keep disconnectRef updated with the current disconnect function ---
+  useEffect(() => {
+    disconnectRef.current = disconnect;
+  }, [disconnect]);
 
   const startCamera = useCallback(async (mode: "user" | "environment" = facingMode) => {
     if (videoSourceRef.current === "screen") stopVideo();
@@ -131,6 +181,12 @@ export const useGeminiLive = () => {
   const toggleScreenShare = useCallback(() => {
     videoSource === "screen" ? stopVideo() : startScreenShare();
   }, [videoSource, startScreenShare, stopVideo]);
+
+  const toggleThinkingMode = useCallback(() => {
+    if (connectionState === ConnectionState.DISCONNECTED || connectionState === ConnectionState.ERROR) {
+      setIsThinkingMode(prev => !prev);
+    }
+  }, [connectionState]);
 
   const switchCamera = useCallback(() => {
     const newMode = facingMode === 'user' ? 'environment' : 'user';
@@ -198,42 +254,6 @@ export const useGeminiLive = () => {
       clearTimeout(timerId);
     };
   }, [connectionState]);
-
-  const disconnect = useCallback(async () => {
-    const sessionId = currentSessionIdRef.current;
-    stopVideo();
-    updateMediaSession('none');
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
-    if (scriptProcessorRef.current) {
-      scriptProcessorRef.current.disconnect();
-      scriptProcessorRef.current = null;
-    }
-    sourcesRef.current.forEach(source => { try { source.stop(); } catch (e) {} });
-    sourcesRef.current.clear();
-    if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
-    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-    if (aiSpeakingTimerRef.current) clearTimeout(aiSpeakingTimerRef.current);
-    if (inputAudioContextRef.current) {
-      try { await inputAudioContextRef.current.close(); } catch (e) {}
-      inputAudioContextRef.current = null;
-    }
-    if (outputAudioContextRef.current) {
-      try { await outputAudioContextRef.current.close(); } catch (e) {}
-      outputAudioContextRef.current = null;
-    }
-    setConnectionState(ConnectionState.DISCONNECTED);
-    nextStartTimeRef.current = 0;
-    activeSessionRef.current = null;
-    setGroundingMetadata(null);
-    setIsMuted(false);
-    setIsUserSpeaking(false);
-    setIsAiSpeaking(false);
-    isUserSpeakingRef.current = false;
-    currentVolumeRef.current = 0;
-  }, [stopVideo, updateMediaSession]);
 
   const toggleMute = useCallback(() => {
     if (mediaStreamRef.current) {
@@ -367,13 +387,14 @@ export const useGeminiLive = () => {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } } },
           systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. Developed by Yash Sinha. You can "see" through camera or screen. If asked about facts, news, or URLs, use Google Search. Observe the user's screen carefully during screen sharing to assist with technical tasks.`,
+          thinkingConfig: { thinkingBudget: isThinkingMode ? 16384 : 0 },
           tools: [{ googleSearch: {} }] 
         }
       });
     } catch (err: any) { setError("Failed to initialize."); setConnectionState(ConnectionState.ERROR); disconnect(); }
-  }, [disconnect, facingMode, updateMediaSession]);
+  }, [disconnect, updateMediaSession, isThinkingMode]);
 
   useEffect(() => { return () => { disconnect(); }; }, [disconnect]);
 
-  return { connect, disconnect, connectionState, error, groundingMetadata, inputAnalyser: inputAnalyserRef.current, outputAnalyser: outputAnalyserRef.current, isMuted, toggleMute, videoRef, isVideoActive, videoSource, toggleVideo, toggleScreenShare, switchCamera, isUserSpeaking, isAiSpeaking };
+  return { connect, disconnect, connectionState, error, groundingMetadata, inputAnalyser: inputAnalyserRef.current, outputAnalyser: outputAnalyserRef.current, isMuted, toggleMute, videoRef, isVideoActive, videoSource, toggleVideo, toggleScreenShare, switchCamera, isUserSpeaking, isAiSpeaking, isThinkingMode, toggleThinkingMode };
 };
