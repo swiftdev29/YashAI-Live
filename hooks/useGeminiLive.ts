@@ -8,7 +8,10 @@ export const useGeminiLive = () => {
   const [error, setError] = useState<string | null>(null);
   const [groundingMetadata, setGroundingMetadata] = useState<GroundingMetadata | null>(null);
   const [isMuted, setIsMuted] = useState(false);
+  
+  // Video States
   const [isVideoActive, setIsVideoActive] = useState(false);
+  const [videoSource, setVideoSource] = useState<"camera" | "screen" | "none">("none");
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   
   // Interaction States
@@ -44,7 +47,37 @@ export const useGeminiLive = () => {
   const silenceTimerRef = useRef<any>(null);
   const isUserSpeakingRef = useRef(false);
   const aiSpeakingTimerRef = useRef<any>(null);
-  const speechAccumulatorRef = useRef<number>(0); // Tracks consecutive speech frames
+  const speechAccumulatorRef = useRef<number>(0);
+
+  // --- Media Session Helper ---
+  const updateMediaSession = useCallback((state: 'playing' | 'paused' | 'none') => {
+    if ('mediaSession' in navigator) {
+      if (state === 'none') {
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.playbackState = 'none';
+        return;
+      }
+
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: 'YashAI Voice Session',
+        artist: 'Yash AI',
+        album: 'Live Conversation',
+        artwork: [
+          { src: 'https://raw.githubusercontent.com/swiftdev29/Jee-mains-checker/refs/heads/main/icon-512.svg', sizes: '512x512', type: 'image/svg+xml' }
+        ]
+      });
+
+      navigator.mediaSession.playbackState = state;
+
+      // Add action handlers for the lock screen
+      navigator.mediaSession.setActionHandler('stop', () => {
+        disconnect();
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        disconnect();
+      });
+    }
+  }, []);
 
   useEffect(() => {
     isVideoActiveRef.current = isVideoActive;
@@ -52,6 +85,7 @@ export const useGeminiLive = () => {
 
   const stopVideo = useCallback(() => {
     setIsVideoActive(false);
+    setVideoSource("none");
     isVideoActiveRef.current = false;
     
     if (videoStreamRef.current) {
@@ -64,146 +98,113 @@ export const useGeminiLive = () => {
     currentVolumeRef.current = 0;
   }, []);
 
-  const startVideo = useCallback(async (mode: "user" | "environment" = facingMode) => {
-    if (isVideoActive && videoStreamRef.current) {
-       const currentTrack = videoStreamRef.current.getVideoTracks()[0];
-       const currentMode = currentTrack.getSettings().facingMode;
-       if (currentMode === mode || (!currentMode && mode === 'user')) return; 
-       stopVideo(); 
-    }
-
+  const startCamera = useCallback(async (mode: "user" | "environment" = facingMode) => {
+    if (videoSource === "screen") stopVideo();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          facingMode: mode,
-          width: { ideal: 640 }, 
-          height: { ideal: 480 },
-          frameRate: { ideal: 15, max: 24 }
-        } 
+        video: { facingMode: mode, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 24 } } 
       });
-      
       videoStreamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-      
       setIsVideoActive(true);
+      setVideoSource("camera");
     } catch (e) {
-      console.error("Failed to start video", e);
-      if (mode === 'environment') {
-        setFacingMode('user');
-        startVideo('user');
-      } else {
-         setError("Could not access camera.");
-         setIsVideoActive(false);
-      }
+      setError("Could not access camera.");
+      setIsVideoActive(false);
     }
-  }, [connectionState, isVideoActive, stopVideo, facingMode]);
+  }, [videoSource, facingMode, stopVideo]);
+
+  const startScreenShare = useCallback(async () => {
+    if (videoSource === "camera") stopVideo();
+    try {
+      const stream = await (navigator.mediaDevices as any).getDisplayMedia({
+        video: { cursor: "always", frameRate: { ideal: 10, max: 15 } },
+        audio: false
+      });
+      stream.getVideoTracks()[0].onended = () => stopVideo();
+      videoStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setIsVideoActive(true);
+      setVideoSource("screen");
+    } catch (e) {
+      setError("Screen share failed.");
+      setIsVideoActive(false);
+    }
+  }, [videoSource, stopVideo]);
+
+  const toggleVideo = useCallback(() => {
+    videoSource === "camera" ? stopVideo() : startCamera(facingMode);
+  }, [videoSource, startCamera, stopVideo, facingMode]);
+
+  const toggleScreenShare = useCallback(() => {
+    videoSource === "screen" ? stopVideo() : startScreenShare();
+  }, [videoSource, startScreenShare, stopVideo]);
+
+  const switchCamera = useCallback(() => {
+    const newMode = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(newMode);
+    if (videoSource === 'camera') startCamera(newMode);
+  }, [facingMode, videoSource, startCamera]);
 
   // Video Streaming Loop
   useEffect(() => {
     let isMounted = true;
     let animationFrameId: number;
     let lastSendTime = 0;
-
     const captureAndSendFrame = () => {
         if (!isMounted) return;
-
-        if (isVideoActiveRef.current && 
-            connectionState === ConnectionState.CONNECTED && 
-            videoRef.current && 
-            activeSessionRef.current) {
-            
+        if (isVideoActiveRef.current && connectionState === ConnectionState.CONNECTED && videoRef.current && activeSessionRef.current) {
             const now = Date.now();
-            const isTalking = currentVolumeRef.current > 0.01;
-            const targetInterval = isTalking ? 200 : 2000;
-
+            const targetInterval = currentVolumeRef.current > 0.01 ? 250 : 2000;
             if (now - lastSendTime > targetInterval) {
                 try {
                     const video = videoRef.current;
                     if (video.videoWidth > 0 && video.videoHeight > 0) {
-                        if (!videoCanvasRef.current) {
-                            videoCanvasRef.current = document.createElement('canvas');
-                        }
+                        if (!videoCanvasRef.current) videoCanvasRef.current = document.createElement('canvas');
                         const canvas = videoCanvasRef.current;
                         const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
                         if (ctx) {
-                            const MAX_WIDTH = 320; 
-                            const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
+                            const scale = Math.min(1, 320 / video.videoWidth);
                             canvas.width = video.videoWidth * scale;
                             canvas.height = video.videoHeight * scale;
-
                             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
                             const base64Data = canvas.toDataURL('image/jpeg', 0.5);
                             const base64Content = base64Data.split(',')[1];
-
                             if (base64Content && isVideoActiveRef.current) {
-                                activeSessionRef.current.sendRealtimeInput({
-                                    media: { mimeType: 'image/jpeg', data: base64Content }
-                                });
+                                activeSessionRef.current.sendRealtimeInput({ media: { mimeType: 'image/jpeg', data: base64Content } });
                                 lastSendTime = now;
                             }
                         }
                     }
-                } catch (e) {
-                    console.debug("Frame error", e);
-                }
+                } catch (e) {}
             }
         }
-
         animationFrameId = requestAnimationFrame(captureAndSendFrame);
     };
-
-    if (isVideoActive && connectionState === ConnectionState.CONNECTED) {
-        captureAndSendFrame();
-    }
-
-    return () => {
-        isMounted = false;
-        cancelAnimationFrame(animationFrameId);
-    };
+    if (isVideoActive && connectionState === ConnectionState.CONNECTED) captureAndSendFrame();
+    return () => { isMounted = false; cancelAnimationFrame(animationFrameId); };
   }, [isVideoActive, connectionState]);
-
-  const toggleVideo = useCallback(() => {
-    if (isVideoActive) {
-      stopVideo();
-    } else {
-      startVideo(facingMode);
-    }
-  }, [isVideoActive, startVideo, stopVideo, facingMode]);
-
-  const switchCamera = useCallback(() => {
-    const newMode = facingMode === 'user' ? 'environment' : 'user';
-    setFacingMode(newMode);
-    if (isVideoActive) {
-        startVideo(newMode);
-    }
-  }, [facingMode, isVideoActive, startVideo]);
-
 
   const disconnect = useCallback(async () => {
     const sessionId = currentSessionIdRef.current;
-    console.log(`[${sessionId}] Disconnecting...`);
-
     stopVideo();
+    updateMediaSession('none');
 
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
       mediaStreamRef.current = null;
     }
-
     if (scriptProcessorRef.current) {
       scriptProcessorRef.current.disconnect();
-      scriptProcessorRef.current.onaudioprocess = null;
       scriptProcessorRef.current = null;
     }
-
-    sourcesRef.current.forEach(source => {
-      try { source.stop(); } catch (e) { /* ignore */ }
-    });
+    sourcesRef.current.forEach(source => { try { source.stop(); } catch (e) {} });
     sourcesRef.current.clear();
     
     if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
@@ -229,13 +230,11 @@ export const useGeminiLive = () => {
     isUserSpeakingRef.current = false;
     currentVolumeRef.current = 0;
     speechAccumulatorRef.current = 0;
-  }, [stopVideo]);
+  }, [stopVideo, updateMediaSession]);
 
   const toggleMute = useCallback(() => {
     if (mediaStreamRef.current) {
-      mediaStreamRef.current.getAudioTracks().forEach(track => {
-        track.enabled = !track.enabled;
-      });
+      mediaStreamRef.current.getAudioTracks().forEach(track => track.enabled = !track.enabled);
       setIsMuted(prev => !prev);
     }
   }, []);
@@ -243,82 +242,42 @@ export const useGeminiLive = () => {
   const connect = useCallback(async () => {
     const sessionId = Math.random().toString(36).substring(7);
     currentSessionIdRef.current = sessionId;
-    console.log(`[${sessionId}] Connecting...`);
 
     try {
       await disconnect();
-      
       setConnectionState(ConnectionState.CONNECTING);
       setError(null);
-      setGroundingMetadata(null);
-      setIsMuted(false);
-      setIsUserSpeaking(false);
-      setIsAiSpeaking(false);
-      isUserSpeakingRef.current = false;
-      speechAccumulatorRef.current = 0;
 
-      let inputCtx: AudioContext;
-      let outputCtx: AudioContext;
-      
-      try {
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        inputCtx = new AudioContextClass({ sampleRate: 16000 });
-        outputCtx = new AudioContextClass({ latencyHint: 'interactive' });
-      } catch (e) {
-        setError("Could not initialize audio system.");
-        setConnectionState(ConnectionState.ERROR);
-        return;
-      }
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const inputCtx = new AudioContextClass({ sampleRate: 16000 });
+      const outputCtx = new AudioContextClass({ latencyHint: 'interactive' });
       
       inputAudioContextRef.current = inputCtx;
       outputAudioContextRef.current = outputCtx;
 
       const inputAnalyser = inputCtx.createAnalyser();
       inputAnalyser.fftSize = 256;
-      inputAnalyser.smoothingTimeConstant = 0.5;
       inputAnalyserRef.current = inputAnalyser;
 
       const outputAnalyser = outputCtx.createAnalyser();
       outputAnalyser.fftSize = 256;
-      outputAnalyser.smoothingTimeConstant = 0.8;
       outputAnalyserRef.current = outputAnalyser;
       
-      // --- Output Audio Chain Setup ---
-      
-      // 1. Gain Node (Volume/Ducking)
       const volumeGainNode = outputCtx.createGain();
       volumeGainNode.gain.value = 1.0; 
       volumeGainNodeRef.current = volumeGainNode;
-
-      // REMOVED: Dynamics Compressor for lowest possible latency.
-      // Connecting directly: Source -> VolumeGain -> Analyser -> Destination
       volumeGainNode.connect(outputAnalyser);
       outputAnalyser.connect(outputCtx.destination);
       
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ 
-          audio: {
-            echoCancellation: true, 
-            noiseSuppression: true,
-            autoGainControl: true,
-            channelCount: 1
-          } 
-        });
-        mediaStreamRef.current = stream;
-      } catch (e) {
-        setError("Microphone access denied.");
-        setConnectionState(ConnectionState.ERROR);
-        return;
-      }
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } 
+      });
+      mediaStreamRef.current = stream;
 
-      // 4. Resume contexts and start playback AFTER mic is acquired
       try {
         if (inputCtx.state === 'suspended') await inputCtx.resume();
         if (outputCtx.state === 'suspended') await outputCtx.resume();
-      } catch (e) {
-        console.debug("Audio play failed", e);
-      }
+      } catch (e) {}
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const currentDateTime = new Date().toLocaleString();
@@ -327,17 +286,14 @@ export const useGeminiLive = () => {
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         callbacks: {
           onopen: () => {
-             console.log(`[${sessionId}] Session opened`);
              if (currentSessionIdRef.current !== sessionId) return;
-
              sessionPromise.then(session => {
                 activeSessionRef.current = session;
                 setConnectionState(ConnectionState.CONNECTED);
+                updateMediaSession('playing');
              });
             
             const source = inputCtx.createMediaStreamSource(stream);
-            
-            // --- Input Gain Stage ---
             const inputGain = inputCtx.createGain();
             inputGain.gain.value = 1.5;
             source.connect(inputGain);
@@ -348,78 +304,36 @@ export const useGeminiLive = () => {
 
             scriptProcessor.onaudioprocess = (e) => {
               if (currentSessionIdRef.current !== sessionId) return;
-
               const inputData = e.inputBuffer.getChannelData(0);
-              
               let sum = 0;
-              for (let i = 0; i < inputData.length; i++) {
-                sum += inputData[i] * inputData[i];
-              }
+              for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
               const rms = Math.sqrt(sum / inputData.length);
               currentVolumeRef.current = rms;
-
-              // --- ADAPTIVE VAD & INTERRUPTION LOGIC ---
               const aiIsTalking = sourcesRef.current.size > 0;
-              const BASE_THRESHOLD = 0.012;     
-              const BARGE_IN_THRESHOLD = 0.03; 
-              const activeThreshold = aiIsTalking ? BARGE_IN_THRESHOLD : BASE_THRESHOLD;
               
-              if (rms > activeThreshold) {
+              if (rms > (aiIsTalking ? 0.03 : 0.012)) {
                 speechAccumulatorRef.current += 1;
-                
                 if (aiIsTalking && speechAccumulatorRef.current > 2) {
-                    if (volumeGainNodeRef.current) {
-                        // Ducking: drop to 20% of the volume
-                        volumeGainNodeRef.current.gain.setTargetAtTime(0.2, outputCtx.currentTime, 0.05);
-                    }
+                    volumeGainNodeRef.current?.gain.setTargetAtTime(0.2, outputCtx.currentTime, 0.05);
                 }
-
-                if (silenceTimerRef.current) {
-                    clearTimeout(silenceTimerRef.current);
-                    silenceTimerRef.current = null;
-                }
-                
-                if (!isUserSpeakingRef.current) {
-                  isUserSpeakingRef.current = true;
-                  setIsUserSpeaking(true);
-                  setIsAiSpeaking(false); 
-                }
-
+                if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+                if (!isUserSpeakingRef.current) { isUserSpeakingRef.current = true; setIsUserSpeaking(true); setIsAiSpeaking(false); }
                 if (activeSessionRef.current) {
-                    const pcmBlob = createPcmBlob(inputData);
-                    try {
-                        activeSessionRef.current.sendRealtimeInput({ media: pcmBlob });
-                    } catch (e) {
-                        console.debug("Send failed", e);
-                    }
+                    try { activeSessionRef.current.sendRealtimeInput({ media: createPcmBlob(inputData) }); } catch (e) {}
                 }
-                
               } else {
                 speechAccumulatorRef.current = 0;
-
                 if (isUserSpeakingRef.current && !silenceTimerRef.current) {
                   silenceTimerRef.current = setTimeout(() => {
-                    isUserSpeakingRef.current = false;
-                    setIsUserSpeaking(false);
-                    silenceTimerRef.current = null;
-                    
-                    if (volumeGainNodeRef.current) {
-                         // Restore to full volume (1.0)
-                         volumeGainNodeRef.current.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.2);
-                    }
-
+                    isUserSpeakingRef.current = false; setIsUserSpeaking(false); silenceTimerRef.current = null;
+                    volumeGainNodeRef.current?.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.2);
                   }, 500); 
                 }
-                
                 if (!aiIsTalking && activeSessionRef.current) {
-                    const pcmBlob = createPcmBlob(inputData);
-                    try {
-                         activeSessionRef.current.sendRealtimeInput({ media: pcmBlob });
-                    } catch(e) {}
+                    try { activeSessionRef.current.sendRealtimeInput({ media: createPcmBlob(inputData) }); } catch(e) {}
                 }
               }
             };
-
             const voidDestination = inputCtx.createMediaStreamDestination();
             const muteNode = inputCtx.createGain();
             muteNode.gain.value = 0;
@@ -429,72 +343,39 @@ export const useGeminiLive = () => {
           },
           onmessage: async (message: LiveServerMessage) => {
              if (currentSessionIdRef.current !== sessionId) return;
-
              const interrupted = message.serverContent?.interrupted;
              if (interrupted) {
-               sourcesRef.current.forEach(source => {
-                 try { source.stop(); } catch (e) {}
-               });
+               sourcesRef.current.forEach(source => { try { source.stop(); } catch (e) {} });
                sourcesRef.current.clear();
                nextStartTimeRef.current = 0;
                setIsAiSpeaking(false);
-               
-               if (volumeGainNodeRef.current && outputAudioContextRef.current) {
-                  volumeGainNodeRef.current.gain.cancelScheduledValues(outputAudioContextRef.current.currentTime);
-                  // Restore to full volume (1.0)
-                  volumeGainNodeRef.current.gain.value = 1.0;
-               }
+               volumeGainNodeRef.current?.gain.cancelScheduledValues(outputAudioContextRef.current!.currentTime);
+               if (volumeGainNodeRef.current) volumeGainNodeRef.current.gain.value = 1.0;
              }
-
-             const grounding = (message.serverContent?.modelTurn as any)?.groundingMetadata || 
-                               (message.serverContent as any)?.groundingMetadata;
-             
+             const grounding = (message.serverContent?.modelTurn as any)?.groundingMetadata || (message.serverContent as any)?.groundingMetadata;
              if (grounding) {
                if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
                setGroundingMetadata(grounding);
-               groundingTimeoutRef.current = setTimeout(() => {
-                 setGroundingMetadata(null);
-               }, 6000);
+               groundingTimeoutRef.current = setTimeout(() => setGroundingMetadata(null), 6000);
              }
-
             const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64Audio) {
                const ctx = outputAudioContextRef.current;
                if (!ctx) return;
-
-               // Ensure the context is running (sometimes it suspends on mobile)
-               if (ctx.state === 'suspended') {
-                 try { await ctx.resume(); } catch(e) {}
-               }
-
+               if (ctx.state === 'suspended') try { await ctx.resume(); } catch(e) {}
                const now = ctx.currentTime;
-               // Standard scheduling without extra lookahead delay
                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, now);
-
-               const audioBuffer = await decodeAudioData(
-                 base64ToBytes(base64Audio),
-                 ctx,
-                 24000,
-                 1
-               );
-
+               const audioBuffer = await decodeAudioData(base64ToBytes(base64Audio), ctx, 24000, 1);
                const source = ctx.createBufferSource();
                source.buffer = audioBuffer;
-               // Connect sources to the Gain Node (which is now part of the chain)
                source.connect(volumeGainNode);
-
                source.addEventListener('ended', () => {
                  sourcesRef.current.delete(source);
                  if (sourcesRef.current.size === 0) {
                      if (aiSpeakingTimerRef.current) clearTimeout(aiSpeakingTimerRef.current);
-                     aiSpeakingTimerRef.current = setTimeout(() => {
-                         if (sourcesRef.current.size === 0) {
-                             setIsAiSpeaking(false);
-                         }
-                     }, 200);
+                     aiSpeakingTimerRef.current = setTimeout(() => { if (sourcesRef.current.size === 0) setIsAiSpeaking(false); }, 200);
                  }
                });
-
                source.start(nextStartTimeRef.current);
                nextStartTimeRef.current += audioBuffer.duration;
                sourcesRef.current.add(source);
@@ -502,7 +383,6 @@ export const useGeminiLive = () => {
             }
           },
           onerror: (e) => {
-            console.error(`[${sessionId}] YashAI Live Error`, e);
             if (currentSessionIdRef.current === sessionId) {
               setError("Connection Error. Please try again.");
               setConnectionState(ConnectionState.ERROR);
@@ -510,7 +390,6 @@ export const useGeminiLive = () => {
             }
           },
           onclose: () => {
-             console.log(`[${sessionId}] Session closed`);
              if (currentSessionIdRef.current === sessionId) {
                setConnectionState(ConnectionState.DISCONNECTED);
                disconnect();
@@ -519,59 +398,34 @@ export const useGeminiLive = () => {
         },
         config: {
           responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } }
-          },
-          realtimeInputConfig: {
-            automaticActivityDetection: {
-              silenceDurationMs: 100
-            }
-
-          },
-          systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. You have been completely developed from scratch by proficient developer Yash Sinha, who has trained you using YashAI Max, an LLM model. You are NOT related/associated to Google. You can use expressions in your voice like laughing, breathing and others whenever necessary. Converse with the user in your default American accent in English unless the user speaks in another language. You have the ability to search the web, so perform web searches whenever needed. If asked about current events, news, or specific facts, ALWAYS use the Google Search tool.`,
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } } },
+          systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. You have been completely developed from scratch by proficient developer Yash Sinha, who has trained you using YashAI Max, an LLM model. You are NOT related/associated to Google. Maintain a conversational tone. You can use expressions in your voice like laughing, breathing and others whenever necessary. You can "see" through the user's camera OR through their screen if they choose to share it. Use this visual information to provide helpful, context-aware assistance. If asked about current events, news, or specific facts, ALWAYS use the Google Search tool.`,
           thinkingConfig: { thinkingBudget: 0 },
           tools: [{ googleSearch: {} }] 
         }
       });
-      
       sessionPromise.catch(err => {
-        console.error(`[${sessionId}] Connection promise failed:`, err);
         if (currentSessionIdRef.current === sessionId) {
           setError("Failed to connect to YashAI.");
           setConnectionState(ConnectionState.ERROR);
           disconnect();
         }
       });
-
     } catch (err: any) {
-      console.error(err);
       setError(err.message || "Failed to initialize connection");
       setConnectionState(ConnectionState.ERROR);
       disconnect();
     }
-  }, [disconnect, facingMode]);
+  }, [disconnect, facingMode, updateMediaSession]);
 
-  useEffect(() => {
-    return () => {
-      disconnect();
-    };
-  }, [disconnect]);
+  useEffect(() => { return () => { disconnect(); }; }, [disconnect]);
 
   return {
-    connect,
-    disconnect,
-    connectionState,
-    error,
-    groundingMetadata,
+    connect, disconnect, connectionState, error, groundingMetadata,
     inputAnalyser: inputAnalyserRef.current,
     outputAnalyser: outputAnalyserRef.current,
-    isMuted,
-    toggleMute,
-    videoRef,
-    isVideoActive,
-    toggleVideo,
-    switchCamera,
-    isUserSpeaking,
-    isAiSpeaking
+    isMuted, toggleMute, videoRef, isVideoActive, videoSource,
+    toggleVideo, toggleScreenShare, switchCamera,
+    isUserSpeaking, isAiSpeaking
   };
 };

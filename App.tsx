@@ -21,7 +21,9 @@ const MainApp: React.FC = () => {
     toggleMute,
     videoRef,
     isVideoActive,
+    videoSource,
     toggleVideo,
+    toggleScreenShare,
     switchCamera,
     isUserSpeaking,
     isAiSpeaking
@@ -36,7 +38,7 @@ const MainApp: React.FC = () => {
   };
 
   // Visualizer Logic
-  const visualizerColor = '#3b82f6'; // Tailwind Blue-500
+  const visualizerColor = '#3b82f6';
   let activeAnalyser = null;
 
   if (connectionState === ConnectionState.CONNECTED) {
@@ -56,7 +58,6 @@ const MainApp: React.FC = () => {
       <div className="absolute inset-0 pointer-events-none overflow-hidden">
         <div className={`absolute top-[-20%] left-[-10%] w-[60%] h-[60%] rounded-full bg-blue-900/10 blur-[120px] transition-all duration-1000 ease-in-out ${connectionState === ConnectionState.CONNECTED ? 'opacity-80 scale-105' : 'opacity-30 scale-100'}`} />
         <div className={`absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] rounded-full bg-indigo-900/10 blur-[120px] transition-all duration-1000 ease-in-out ${connectionState === ConnectionState.CONNECTED ? 'opacity-80 scale-105' : 'opacity-30 scale-100'}`} />
-        {/* Subtle grid texture overlay */}
         <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 brightness-100 contrast-150 mix-blend-overlay"></div>
       </div>
 
@@ -85,14 +86,14 @@ const MainApp: React.FC = () => {
             <div className={`absolute inset-0 rounded-full border border-blue-500/20 transition-all duration-1000 ease-out ${connectionState === ConnectionState.CONNECTED ? 'scale-100 opacity-100' : 'scale-90 opacity-0'}`}></div>
             <div className={`absolute inset-0 rounded-full border border-indigo-500/10 transition-all duration-1000 ease-out delay-150 ${connectionState === ConnectionState.CONNECTED ? 'scale-110 opacity-100' : 'scale-95 opacity-0'}`}></div>
 
-            {/* Video Feed Layer - Styled as a sleek underlay */}
+            {/* Video Feed Layer */}
             <div className={`absolute inset-[15%] rounded-full overflow-hidden z-0 transition-all duration-700 ease-[cubic-bezier(0.23,1,0.32,1)] ${isVideoActive ? 'opacity-100 scale-100 shadow-[0_0_40px_rgba(0,0,0,0.5)]' : 'opacity-0 scale-50'}`}>
                 <video 
                     ref={videoRef} 
                     autoPlay 
                     playsInline 
                     muted 
-                    className="w-full h-full object-cover opacity-60 mix-blend-lighten"
+                    className={`w-full h-full object-cover opacity-60 mix-blend-lighten ${videoSource === 'screen' ? 'scale-110' : ''}`}
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20"></div>
             </div>
@@ -138,25 +139,36 @@ const MainApp: React.FC = () => {
 
                 <div className="w-px h-6 bg-white/10 mx-1"></div>
 
+                {/* Camera Toggle */}
                 <button 
                     onClick={toggleVideo}
                     className={`
                         w-12 h-12 rounded-xl flex items-center justify-center transition-all duration-200
-                        ${isVideoActive 
+                        ${videoSource === 'camera' 
                             ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.2)]' 
                             : 'hover:bg-white/10 text-slate-300 hover:text-white'}
                     `}
                     title="Camera"
                 >
-                    {isVideoActive ? (
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-                    ) : (
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 3l18 18" /></svg>
-                    )}
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                </button>
+
+                {/* Screen Share Toggle */}
+                <button 
+                    onClick={toggleScreenShare}
+                    className={`
+                        w-12 h-12 rounded-xl flex items-center justify-center transition-all duration-200
+                        ${videoSource === 'screen' 
+                            ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.2)]' 
+                            : 'hover:bg-white/10 text-slate-300 hover:text-white'}
+                    `}
+                    title="Share Screen"
+                >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13V5a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" /></svg>
                 </button>
                 
-                {/* Flip Camera */}
-                <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isVideoActive ? 'w-12 opacity-100' : 'w-0 opacity-0'}`}>
+                {/* Flip Camera - Only visible when camera is the source */}
+                <div className={`overflow-hidden transition-all duration-300 ease-in-out ${videoSource === 'camera' ? 'w-12 opacity-100' : 'w-0 opacity-0'}`}>
                      <button 
                         onClick={switchCamera}
                         className="w-12 h-12 rounded-xl flex items-center justify-center hover:bg-white/10 text-slate-300 hover:text-white transition-colors"
@@ -265,7 +277,7 @@ const MainApp: React.FC = () => {
   );
 };
 
-// Authentication Wrapper (Kept consistent with new style)
+// Authentication Wrapper
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     try {
