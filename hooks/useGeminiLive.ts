@@ -33,13 +33,19 @@ export const useGeminiLive = () => {
   const videoStreamRef = useRef<MediaStream | null>(null);
   const videoCanvasRef = useRef<HTMLCanvasElement | null>(null);
   
-  // State Refs for Logic
+  // State Refs for Background Logic
   const currentVolumeRef = useRef<number>(0);
   const isVideoActiveRef = useRef<boolean>(false);
   const videoSourceRef = useRef<"camera" | "screen" | "none">("none");
-  
-  // Session Management
   const activeSessionRef = useRef<any>(null); 
+  
+  // Sync refs with state
+  useEffect(() => {
+    isVideoActiveRef.current = isVideoActive;
+    videoSourceRef.current = videoSource;
+  }, [isVideoActive, videoSource]);
+
+  // Session Management
   const nextStartTimeRef = useRef<number>(0);
   const currentSessionIdRef = useRef<string>('');
   const groundingTimeoutRef = useRef<any>(null);
@@ -50,13 +56,7 @@ export const useGeminiLive = () => {
   const aiSpeakingTimerRef = useRef<any>(null);
   const speechAccumulatorRef = useRef<number>(0);
 
-  // Sync refs with state for the capture loop
-  useEffect(() => {
-    isVideoActiveRef.current = isVideoActive;
-    videoSourceRef.current = videoSource;
-  }, [isVideoActive, videoSource]);
-
-  // --- Media Session Helper ---
+  // --- Media Session Helper for Backgrounding ---
   const updateMediaSession = useCallback((state: 'playing' | 'paused' | 'none') => {
     if ('mediaSession' in navigator) {
       if (state === 'none') {
@@ -64,43 +64,31 @@ export const useGeminiLive = () => {
         navigator.mediaSession.playbackState = 'none';
         return;
       }
-
       navigator.mediaSession.metadata = new MediaMetadata({
         title: 'YashAI Voice Session',
         artist: 'Yash AI',
-        album: 'Live Conversation',
-        artwork: [
-          { src: 'https://raw.githubusercontent.com/swiftdev29/Jee-mains-checker/refs/heads/main/icon-512.svg', sizes: '512x512', type: 'image/svg+xml' }
-        ]
+        artwork: [{ src: 'https://raw.githubusercontent.com/swiftdev29/Jee-mains-checker/refs/heads/main/icon-512.svg', sizes: '512x512', type: 'image/svg+xml' }]
       });
-
       navigator.mediaSession.playbackState = state;
       navigator.mediaSession.setActionHandler('stop', () => disconnect());
-      navigator.mediaSession.setActionHandler('pause', () => disconnect());
     }
   }, []);
 
   const stopVideo = useCallback(() => {
     setIsVideoActive(false);
     setVideoSource("none");
-    isVideoActiveRef.current = false;
-    videoSourceRef.current = "none";
-    
     if (videoStreamRef.current) {
       videoStreamRef.current.getTracks().forEach(track => track.stop());
       videoStreamRef.current = null;
     }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    currentVolumeRef.current = 0;
+    if (videoRef.current) videoRef.current.srcObject = null;
   }, []);
 
   const startCamera = useCallback(async (mode: "user" | "environment" = facingMode) => {
     if (videoSourceRef.current === "screen") stopVideo();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: mode, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 24 } } 
+        video: { facingMode: mode, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15 } } 
       });
       videoStreamRef.current = stream;
       if (videoRef.current) {
@@ -110,7 +98,7 @@ export const useGeminiLive = () => {
       setIsVideoActive(true);
       setVideoSource("camera");
     } catch (e) {
-      setError("Could not access camera.");
+      setError("Camera access failed.");
       setIsVideoActive(false);
     }
   }, [facingMode, stopVideo]);
@@ -119,7 +107,7 @@ export const useGeminiLive = () => {
     if (videoSourceRef.current === "camera") stopVideo();
     try {
       const stream = await (navigator.mediaDevices as any).getDisplayMedia({
-        video: { cursor: "always", frameRate: { ideal: 10, max: 15 } },
+        video: { cursor: "always", frameRate: { ideal: 10 } },
         audio: false
       });
       stream.getVideoTracks()[0].onended = () => stopVideo();
@@ -150,63 +138,75 @@ export const useGeminiLive = () => {
     if (videoSource === 'camera') startCamera(newMode);
   }, [facingMode, videoSource, startCamera]);
 
-  // Video Streaming Loop
+  // --- Optimized Continuous Streaming Loop ---
   useEffect(() => {
+    let timerId: any;
     let isMounted = true;
-    let animationFrameId: number;
-    let lastSendTime = 0;
 
-    const captureAndSendFrame = () => {
-        if (!isMounted) return;
-        if (isVideoActiveRef.current && connectionState === ConnectionState.CONNECTED && videoRef.current && activeSessionRef.current) {
-            const now = Date.now();
+    const streamLoop = async () => {
+      if (!isMounted) return;
+
+      const shouldStream = isVideoActiveRef.current && 
+                           connectionState === ConnectionState.CONNECTED && 
+                           videoRef.current && 
+                           activeSessionRef.current;
+
+      if (shouldStream) {
+        try {
+          const video = videoRef.current;
+          if (video && video.videoWidth > 0) {
+            if (!videoCanvasRef.current) videoCanvasRef.current = document.createElement('canvas');
+            const canvas = videoCanvasRef.current;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
             
-            // LOGIC: High frequency (250ms) if talking OR if screen sharing.
-            // Screen sharing needs frequent updates to capture movement/scrolling.
-            // Camera can drop to 2000ms heartbeat when silent to save battery.
-            const isScreenShare = videoSourceRef.current === "screen";
-            const targetInterval = (currentVolumeRef.current > 0.01 || isScreenShare) ? 500 : 2000;
+            if (ctx) {
+              const isScreen = videoSourceRef.current === "screen";
+              // Fixed widths for speed/readability: 480px for screen (text), 320px for camera
+              const targetWidth = isScreen ? 480 : 320;
+              const scale = targetWidth / video.videoWidth;
+              canvas.width = targetWidth;
+              canvas.height = video.videoHeight * scale;
+              
+              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+              // Use low quality (0.4) to speed up transmission significantly
+              const base64Data = canvas.toDataURL('image/jpeg', 0.4);
+              const base64Content = base64Data.split(',')[1];
 
-            if (now - lastSendTime > targetInterval) {
-                try {
-                    const video = videoRef.current;
-                    if (video.videoWidth > 0 && video.videoHeight > 0) {
-                        if (!videoCanvasRef.current) videoCanvasRef.current = document.createElement('canvas');
-                        const canvas = videoCanvasRef.current;
-                        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-                        if (ctx) {
-                            const scale = Math.min(1, 480 / video.videoWidth); // Slightly higher res for screen share
-                            canvas.width = video.videoWidth * scale;
-                            canvas.height = video.videoHeight * scale;
-                            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                            const base64Data = canvas.toDataURL('image/jpeg', 0.6); // Quality 0.6
-                            const base64Content = base64Data.split(',')[1];
-                            if (base64Content && isVideoActiveRef.current) {
-                                activeSessionRef.current.sendRealtimeInput({ media: { mimeType: 'image/jpeg', data: base64Content } });
-                                lastSendTime = now;
-                            }
-                        }
-                    }
-                } catch (e) {
-                    console.debug("Capture error", e);
-                }
+              if (base64Content && activeSessionRef.current) {
+                activeSessionRef.current.sendRealtimeInput({
+                  media: { mimeType: 'image/jpeg', data: base64Content }
+                });
+              }
             }
+          }
+        } catch (e) {
+          console.debug("Loop error", e);
         }
-        animationFrameId = requestAnimationFrame(captureAndSendFrame);
+      }
+
+      // Dynamic Interval: 800ms for screen, 1000ms for camera (heartbeat)
+      // Faster when user is speaking to provide context (500ms)
+      const isScreen = videoSourceRef.current === "screen";
+      const isSpeaking = currentVolumeRef.current > 0.012;
+      const interval = isSpeaking ? 500 : (isScreen ? 800 : 1200);
+      
+      timerId = setTimeout(streamLoop, interval);
     };
 
-    if (isVideoActive && connectionState === ConnectionState.CONNECTED) {
-        captureAndSendFrame();
+    if (connectionState === ConnectionState.CONNECTED) {
+      streamLoop();
     }
 
-    return () => { isMounted = false; cancelAnimationFrame(animationFrameId); };
-  }, [isVideoActive, connectionState]);
+    return () => {
+      isMounted = false;
+      clearTimeout(timerId);
+    };
+  }, [connectionState]);
 
   const disconnect = useCallback(async () => {
     const sessionId = currentSessionIdRef.current;
     stopVideo();
     updateMediaSession('none');
-
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
       mediaStreamRef.current = null;
@@ -217,20 +217,17 @@ export const useGeminiLive = () => {
     }
     sourcesRef.current.forEach(source => { try { source.stop(); } catch (e) {} });
     sourcesRef.current.clear();
-    
     if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
     if (aiSpeakingTimerRef.current) clearTimeout(aiSpeakingTimerRef.current);
-
     if (inputAudioContextRef.current) {
-      try { if (inputAudioContextRef.current.state !== 'closed') await inputAudioContextRef.current.close(); } catch (e) {}
+      try { await inputAudioContextRef.current.close(); } catch (e) {}
       inputAudioContextRef.current = null;
     }
     if (outputAudioContextRef.current) {
-      try { if (outputAudioContextRef.current.state !== 'closed') await outputAudioContextRef.current.close(); } catch (e) {}
+      try { await outputAudioContextRef.current.close(); } catch (e) {}
       outputAudioContextRef.current = null;
     }
-
     setConnectionState(ConnectionState.DISCONNECTED);
     nextStartTimeRef.current = 0;
     activeSessionRef.current = null;
@@ -240,7 +237,6 @@ export const useGeminiLive = () => {
     setIsAiSpeaking(false);
     isUserSpeakingRef.current = false;
     currentVolumeRef.current = 0;
-    speechAccumulatorRef.current = 0;
   }, [stopVideo, updateMediaSession]);
 
   const toggleMute = useCallback(() => {
@@ -253,46 +249,32 @@ export const useGeminiLive = () => {
   const connect = useCallback(async () => {
     const sessionId = Math.random().toString(36).substring(7);
     currentSessionIdRef.current = sessionId;
-
     try {
       await disconnect();
       setConnectionState(ConnectionState.CONNECTING);
       setError(null);
-
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const inputCtx = new AudioContextClass({ sampleRate: 16000 });
       const outputCtx = new AudioContextClass({ latencyHint: 'interactive' });
-      
       inputAudioContextRef.current = inputCtx;
       outputAudioContextRef.current = outputCtx;
-
       const inputAnalyser = inputCtx.createAnalyser();
       inputAnalyser.fftSize = 256;
       inputAnalyserRef.current = inputAnalyser;
-
       const outputAnalyser = outputCtx.createAnalyser();
       outputAnalyser.fftSize = 256;
       outputAnalyserRef.current = outputAnalyser;
-      
       const volumeGainNode = outputCtx.createGain();
       volumeGainNode.gain.value = 1.0; 
       volumeGainNodeRef.current = volumeGainNode;
       volumeGainNode.connect(outputAnalyser);
       outputAnalyser.connect(outputCtx.destination);
-      
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } 
-      });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
       mediaStreamRef.current = stream;
-
-      try {
-        if (inputCtx.state === 'suspended') await inputCtx.resume();
-        if (outputCtx.state === 'suspended') await outputCtx.resume();
-      } catch (e) {}
-
+      if (inputCtx.state === 'suspended') await inputCtx.resume();
+      if (outputCtx.state === 'suspended') await outputCtx.resume();
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const currentDateTime = new Date().toLocaleString();
-      
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         callbacks: {
@@ -303,16 +285,9 @@ export const useGeminiLive = () => {
                 setConnectionState(ConnectionState.CONNECTED);
                 updateMediaSession('playing');
              });
-            
             const source = inputCtx.createMediaStreamSource(stream);
-            const inputGain = inputCtx.createGain();
-            inputGain.gain.value = 1.5;
-            source.connect(inputGain);
-            inputGain.connect(inputAnalyser);
-            
             const scriptProcessor = inputCtx.createScriptProcessor(512, 1, 1);
             scriptProcessorRef.current = scriptProcessor;
-
             scriptProcessor.onaudioprocess = (e) => {
               if (currentSessionIdRef.current !== sessionId) return;
               const inputData = e.inputBuffer.getChannelData(0);
@@ -321,17 +296,12 @@ export const useGeminiLive = () => {
               const rms = Math.sqrt(sum / inputData.length);
               currentVolumeRef.current = rms;
               const aiIsTalking = sourcesRef.current.size > 0;
-              
               if (rms > (aiIsTalking ? 0.03 : 0.012)) {
                 speechAccumulatorRef.current += 1;
-                if (aiIsTalking && speechAccumulatorRef.current > 2) {
-                    volumeGainNodeRef.current?.gain.setTargetAtTime(0.2, outputCtx.currentTime, 0.05);
-                }
+                if (aiIsTalking && speechAccumulatorRef.current > 2) volumeGainNodeRef.current?.gain.setTargetAtTime(0.2, outputCtx.currentTime, 0.05);
                 if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
                 if (!isUserSpeakingRef.current) { isUserSpeakingRef.current = true; setIsUserSpeaking(true); setIsAiSpeaking(false); }
-                if (activeSessionRef.current) {
-                    try { activeSessionRef.current.sendRealtimeInput({ media: createPcmBlob(inputData) }); } catch (e) {}
-                }
+                if (activeSessionRef.current) try { activeSessionRef.current.sendRealtimeInput({ media: createPcmBlob(inputData) }); } catch (e) {}
               } else {
                 speechAccumulatorRef.current = 0;
                 if (isUserSpeakingRef.current && !silenceTimerRef.current) {
@@ -340,17 +310,15 @@ export const useGeminiLive = () => {
                     volumeGainNodeRef.current?.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.2);
                   }, 500); 
                 }
-                if (!aiIsTalking && activeSessionRef.current) {
-                    try { activeSessionRef.current.sendRealtimeInput({ media: createPcmBlob(inputData) }); } catch(e) {}
-                }
+                if (!aiIsTalking && activeSessionRef.current) try { activeSessionRef.current.sendRealtimeInput({ media: createPcmBlob(inputData) }); } catch(e) {}
               }
             };
-            const voidDestination = inputCtx.createMediaStreamDestination();
+            source.connect(inputAnalyser);
+            inputAnalyser.connect(scriptProcessor);
             const muteNode = inputCtx.createGain();
             muteNode.gain.value = 0;
-            inputGain.connect(scriptProcessor);
             scriptProcessor.connect(muteNode);
-            muteNode.connect(voidDestination);
+            muteNode.connect(inputCtx.destination);
           },
           onmessage: async (message: LiveServerMessage) => {
              if (currentSessionIdRef.current !== sessionId) return;
@@ -373,7 +341,6 @@ export const useGeminiLive = () => {
             if (base64Audio) {
                const ctx = outputAudioContextRef.current;
                if (!ctx) return;
-               if (ctx.state === 'suspended') try { await ctx.resume(); } catch(e) {}
                const now = ctx.currentTime;
                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, now);
                const audioBuffer = await decodeAudioData(base64ToBytes(base64Audio), ctx, 24000, 1);
@@ -393,50 +360,24 @@ export const useGeminiLive = () => {
                setIsAiSpeaking(true);
             }
           },
-          onerror: (e) => {
-            if (currentSessionIdRef.current === sessionId) {
-              setError("Connection Error. Please try again.");
-              setConnectionState(ConnectionState.ERROR);
-              disconnect();
-            }
+          onerror: () => {
+            if (currentSessionIdRef.current === sessionId) { setError("Connection Error."); setConnectionState(ConnectionState.ERROR); disconnect(); }
           },
           onclose: () => {
-             if (currentSessionIdRef.current === sessionId) {
-               setConnectionState(ConnectionState.DISCONNECTED);
-               disconnect();
-             }
+             if (currentSessionIdRef.current === sessionId) { setConnectionState(ConnectionState.DISCONNECTED); disconnect(); }
           }
         },
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } } },
-          systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. You have been completely developed from scratch by proficient developer Yash Sinha, who has trained you using YashAI Max, an LLM model. You are NOT related/associated to Google. Maintain a conversational tone. You can use expressions in your voice like laughing, breathing and others whenever necessary. You can "see" through the user's camera OR through their screen if they choose to share it. Use this visual information to provide helpful, context-aware assistance. If asked about current events, news, or specific facts, ALWAYS use the Google Search tool.`,
-          thinkingConfig: { thinkingBudget: 0 },
+          systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. Developed by Yash Sinha. You can "see" through camera or screen. If asked about facts, news, or URLs, use Google Search. Observe the user's screen carefully during screen sharing to assist with technical tasks.`,
           tools: [{ googleSearch: {} }] 
         }
       });
-      sessionPromise.catch(err => {
-        if (currentSessionIdRef.current === sessionId) {
-          setError("Failed to connect to YashAI.");
-          setConnectionState(ConnectionState.ERROR);
-          disconnect();
-        }
-      });
-    } catch (err: any) {
-      setError(err.message || "Failed to initialize connection");
-      setConnectionState(ConnectionState.ERROR);
-      disconnect();
-    }
+    } catch (err: any) { setError("Failed to initialize."); setConnectionState(ConnectionState.ERROR); disconnect(); }
   }, [disconnect, facingMode, updateMediaSession]);
 
   useEffect(() => { return () => { disconnect(); }; }, [disconnect]);
 
-  return {
-    connect, disconnect, connectionState, error, groundingMetadata,
-    inputAnalyser: inputAnalyserRef.current,
-    outputAnalyser: outputAnalyserRef.current,
-    isMuted, toggleMute, videoRef, isVideoActive, videoSource,
-    toggleVideo, toggleScreenShare, switchCamera,
-    isUserSpeaking, isAiSpeaking
-  };
+  return { connect, disconnect, connectionState, error, groundingMetadata, inputAnalyser: inputAnalyserRef.current, outputAnalyser: outputAnalyserRef.current, isMuted, toggleMute, videoRef, isVideoActive, videoSource, toggleVideo, toggleScreenShare, switchCamera, isUserSpeaking, isAiSpeaking };
 };
