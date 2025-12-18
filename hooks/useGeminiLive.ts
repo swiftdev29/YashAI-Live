@@ -36,6 +36,7 @@ export const useGeminiLive = () => {
   // State Refs for Logic
   const currentVolumeRef = useRef<number>(0);
   const isVideoActiveRef = useRef<boolean>(false);
+  const videoSourceRef = useRef<"camera" | "screen" | "none">("none");
   
   // Session Management
   const activeSessionRef = useRef<any>(null); 
@@ -48,6 +49,12 @@ export const useGeminiLive = () => {
   const isUserSpeakingRef = useRef(false);
   const aiSpeakingTimerRef = useRef<any>(null);
   const speechAccumulatorRef = useRef<number>(0);
+
+  // Sync refs with state for the capture loop
+  useEffect(() => {
+    isVideoActiveRef.current = isVideoActive;
+    videoSourceRef.current = videoSource;
+  }, [isVideoActive, videoSource]);
 
   // --- Media Session Helper ---
   const updateMediaSession = useCallback((state: 'playing' | 'paused' | 'none') => {
@@ -68,25 +75,16 @@ export const useGeminiLive = () => {
       });
 
       navigator.mediaSession.playbackState = state;
-
-      // Add action handlers for the lock screen
-      navigator.mediaSession.setActionHandler('stop', () => {
-        disconnect();
-      });
-      navigator.mediaSession.setActionHandler('pause', () => {
-        disconnect();
-      });
+      navigator.mediaSession.setActionHandler('stop', () => disconnect());
+      navigator.mediaSession.setActionHandler('pause', () => disconnect());
     }
   }, []);
-
-  useEffect(() => {
-    isVideoActiveRef.current = isVideoActive;
-  }, [isVideoActive]);
 
   const stopVideo = useCallback(() => {
     setIsVideoActive(false);
     setVideoSource("none");
     isVideoActiveRef.current = false;
+    videoSourceRef.current = "none";
     
     if (videoStreamRef.current) {
       videoStreamRef.current.getTracks().forEach(track => track.stop());
@@ -99,7 +97,7 @@ export const useGeminiLive = () => {
   }, []);
 
   const startCamera = useCallback(async (mode: "user" | "environment" = facingMode) => {
-    if (videoSource === "screen") stopVideo();
+    if (videoSourceRef.current === "screen") stopVideo();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { facingMode: mode, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 15, max: 24 } } 
@@ -115,10 +113,10 @@ export const useGeminiLive = () => {
       setError("Could not access camera.");
       setIsVideoActive(false);
     }
-  }, [videoSource, facingMode, stopVideo]);
+  }, [facingMode, stopVideo]);
 
   const startScreenShare = useCallback(async () => {
-    if (videoSource === "camera") stopVideo();
+    if (videoSourceRef.current === "camera") stopVideo();
     try {
       const stream = await (navigator.mediaDevices as any).getDisplayMedia({
         video: { cursor: "always", frameRate: { ideal: 10, max: 15 } },
@@ -136,7 +134,7 @@ export const useGeminiLive = () => {
       setError("Screen share failed.");
       setIsVideoActive(false);
     }
-  }, [videoSource, stopVideo]);
+  }, [stopVideo]);
 
   const toggleVideo = useCallback(() => {
     videoSource === "camera" ? stopVideo() : startCamera(facingMode);
@@ -157,11 +155,18 @@ export const useGeminiLive = () => {
     let isMounted = true;
     let animationFrameId: number;
     let lastSendTime = 0;
+
     const captureAndSendFrame = () => {
         if (!isMounted) return;
         if (isVideoActiveRef.current && connectionState === ConnectionState.CONNECTED && videoRef.current && activeSessionRef.current) {
             const now = Date.now();
-            const targetInterval = currentVolumeRef.current > 0.01 ? 250 : 2000;
+            
+            // LOGIC: High frequency (250ms) if talking OR if screen sharing.
+            // Screen sharing needs frequent updates to capture movement/scrolling.
+            // Camera can drop to 2000ms heartbeat when silent to save battery.
+            const isScreenShare = videoSourceRef.current === "screen";
+            const targetInterval = (currentVolumeRef.current > 0.01 || isScreenShare) ? 500 : 2000;
+
             if (now - lastSendTime > targetInterval) {
                 try {
                     const video = videoRef.current;
@@ -170,11 +175,11 @@ export const useGeminiLive = () => {
                         const canvas = videoCanvasRef.current;
                         const ctx = canvas.getContext('2d', { willReadFrequently: true });
                         if (ctx) {
-                            const scale = Math.min(1, 320 / video.videoWidth);
+                            const scale = Math.min(1, 480 / video.videoWidth); // Slightly higher res for screen share
                             canvas.width = video.videoWidth * scale;
                             canvas.height = video.videoHeight * scale;
                             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                            const base64Data = canvas.toDataURL('image/jpeg', 0.5);
+                            const base64Data = canvas.toDataURL('image/jpeg', 0.6); // Quality 0.6
                             const base64Content = base64Data.split(',')[1];
                             if (base64Content && isVideoActiveRef.current) {
                                 activeSessionRef.current.sendRealtimeInput({ media: { mimeType: 'image/jpeg', data: base64Content } });
@@ -182,12 +187,18 @@ export const useGeminiLive = () => {
                             }
                         }
                     }
-                } catch (e) {}
+                } catch (e) {
+                    console.debug("Capture error", e);
+                }
             }
         }
         animationFrameId = requestAnimationFrame(captureAndSendFrame);
     };
-    if (isVideoActive && connectionState === ConnectionState.CONNECTED) captureAndSendFrame();
+
+    if (isVideoActive && connectionState === ConnectionState.CONNECTED) {
+        captureAndSendFrame();
+    }
+
     return () => { isMounted = false; cancelAnimationFrame(animationFrameId); };
   }, [isVideoActive, connectionState]);
 
