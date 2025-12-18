@@ -8,6 +8,7 @@ export const useGeminiLive = () => {
   const [error, setError] = useState<string | null>(null);
   const [groundingMetadata, setGroundingMetadata] = useState<GroundingMetadata | null>(null);
   const [isMuted, setIsMuted] = useState(false);
+  const [isThinkingMode, setIsThinkingMode] = useState(false);
   
   // Video States
   const [isVideoActive, setIsVideoActive] = useState(false);
@@ -132,6 +133,10 @@ export const useGeminiLive = () => {
     videoSource === "screen" ? stopVideo() : startScreenShare();
   }, [videoSource, startScreenShare, stopVideo]);
 
+  const toggleThinkingMode = useCallback(() => {
+    setIsThinkingMode(prev => !prev);
+  }, []);
+
   const switchCamera = useCallback(() => {
     const newMode = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(newMode);
@@ -161,14 +166,12 @@ export const useGeminiLive = () => {
             
             if (ctx) {
               const isScreen = videoSourceRef.current === "screen";
-              // Fixed widths for speed/readability: 480px for screen (text), 320px for camera
               const targetWidth = isScreen ? 480 : 320;
               const scale = targetWidth / video.videoWidth;
               canvas.width = targetWidth;
               canvas.height = video.videoHeight * scale;
               
               ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-              // Use low quality (0.4) to speed up transmission significantly
               const base64Data = canvas.toDataURL('image/jpeg', 0.4);
               const base64Content = base64Data.split(',')[1];
 
@@ -184,8 +187,6 @@ export const useGeminiLive = () => {
         }
       }
 
-      // Dynamic Interval: 800ms for screen, 1000ms for camera (heartbeat)
-      // Faster when user is speaking to provide context (500ms)
       const isScreen = videoSourceRef.current === "screen";
       const isSpeaking = currentVolumeRef.current > 0.012;
       const interval = isSpeaking ? 500 : (isScreen ? 800 : 1200);
@@ -371,13 +372,14 @@ export const useGeminiLive = () => {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } } },
           systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. Developed by Yash Sinha. You can "see" through camera or screen. If asked about facts, news, or URLs, use Google Search. Observe the user's screen carefully during screen sharing to assist with technical tasks.`,
+          thinkingConfig: { thinkingBudget: isThinkingMode ? 16384 : 0 },
           tools: [{ googleSearch: {} }] 
         }
       });
     } catch (err: any) { setError("Failed to initialize."); setConnectionState(ConnectionState.ERROR); disconnect(); }
-  }, [disconnect, facingMode, updateMediaSession]);
+  }, [disconnect, facingMode, updateMediaSession, isThinkingMode]);
 
   useEffect(() => { return () => { disconnect(); }; }, [disconnect]);
 
-  return { connect, disconnect, connectionState, error, groundingMetadata, inputAnalyser: inputAnalyserRef.current, outputAnalyser: outputAnalyserRef.current, isMuted, toggleMute, videoRef, isVideoActive, videoSource, toggleVideo, toggleScreenShare, switchCamera, isUserSpeaking, isAiSpeaking };
+  return { connect, disconnect, connectionState, error, groundingMetadata, inputAnalyser: inputAnalyserRef.current, outputAnalyser: outputAnalyserRef.current, isMuted, toggleMute, videoRef, isVideoActive, videoSource, toggleVideo, toggleScreenShare, switchCamera, isUserSpeaking, isAiSpeaking, isThinkingMode, toggleThinkingMode };
 };
