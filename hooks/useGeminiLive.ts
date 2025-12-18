@@ -8,7 +8,6 @@ export const useGeminiLive = () => {
   const [error, setError] = useState<string | null>(null);
   const [groundingMetadata, setGroundingMetadata] = useState<GroundingMetadata | null>(null);
   const [isMuted, setIsMuted] = useState(false);
-  const [isThinkingMode, setIsThinkingMode] = useState(false);
   
   // Video States
   const [isVideoActive, setIsVideoActive] = useState(false);
@@ -132,10 +131,6 @@ export const useGeminiLive = () => {
   const toggleScreenShare = useCallback(() => {
     videoSource === "screen" ? stopVideo() : startScreenShare();
   }, [videoSource, startScreenShare, stopVideo]);
-
-  const toggleThinkingMode = useCallback(() => {
-    setIsThinkingMode(prev => !prev);
-  }, []);
 
   const switchCamera = useCallback(() => {
     const newMode = facingMode === 'user' ? 'environment' : 'user';
@@ -372,14 +367,13 @@ export const useGeminiLive = () => {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } } },
           systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. Developed by Yash Sinha. You can "see" through camera or screen. If asked about facts, news, or URLs, use Google Search. Observe the user's screen carefully during screen sharing to assist with technical tasks.`,
-          thinkingConfig: { thinkingBudget: isThinkingMode ? 16384 : 0 },
           tools: [{ googleSearch: {} }] 
         }
       });
     } catch (err: any) { setError("Failed to initialize."); setConnectionState(ConnectionState.ERROR); disconnect(); }
-  }, [disconnect, facingMode, updateMediaSession, isThinkingMode]);
+  }, [disconnect, facingMode, updateMediaSession]);
 
   useEffect(() => { return () => { disconnect(); }; }, [disconnect]);
 
-  return { connect, disconnect, connectionState, error, groundingMetadata, inputAnalyser: inputAnalyserRef.current, outputAnalyser: outputAnalyserRef.current, isMuted, toggleMute, videoRef, isVideoActive, videoSource, toggleVideo, toggleScreenShare, switchCamera, isUserSpeaking, isAiSpeaking, isThinkingMode, toggleThinkingMode };
+  return { connect, disconnect, connectionState, error, groundingMetadata, inputAnalyser: inputAnalyserRef.current, outputAnalyser: outputAnalyserRef.current, isMuted, toggleMute, videoRef, isVideoActive, videoSource, toggleVideo, toggleScreenShare, switchCamera, isUserSpeaking, isAiSpeaking };
 };
