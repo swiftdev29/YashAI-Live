@@ -41,6 +41,18 @@ export const useGeminiLive = () => {
   const isUserSpeakingRef = useRef<boolean>(false);
   const nextStartTimeRef = useRef<number>(0);
 
+  /**
+   * Clears the playback queue when the server confirms an interrupt.
+   */
+  const stopAllAiAudio = useCallback(() => {
+    sourcesRef.current.forEach(source => {
+      try { source.stop(); } catch (e) {}
+    });
+    sourcesRef.current.clear();
+    nextStartTimeRef.current = 0;
+    setIsAiSpeaking(false);
+  }, []);
+
   const disconnect = useCallback(async () => {
     setIsVideoActive(false);
     setVideoSource("none");
@@ -55,8 +67,7 @@ export const useGeminiLive = () => {
       mediaStreamRef.current = null;
     }
     
-    sourcesRef.current.forEach(source => { try { source.stop(); } catch (e) {} });
-    sourcesRef.current.clear();
+    stopAllAiAudio();
     
     if (inputAudioContextRef.current) { try { await inputAudioContextRef.current.close(); } catch(e){} inputAudioContextRef.current = null; }
     if (outputAudioContextRef.current) { try { await outputAudioContextRef.current.close(); } catch(e){} outputAudioContextRef.current = null; }
@@ -65,12 +76,12 @@ export const useGeminiLive = () => {
     activeSessionRef.current = null;
     sessionPromiseRef.current = null;
     setIsUserSpeaking(false);
-    setIsAiSpeaking(false);
-  }, []);
+  }, [stopAllAiAudio]);
 
   /**
-   * Drastically optimized frame capture.
-   * Low resolution (320px) and low quality (0.35) are KEY to avoiding WebSocket buffer bloat.
+   * Optimized Frame Capture:
+   * 320px width and 0.3 quality are MANDATORY to prevent the 15s lag.
+   * This resolution is still perfect for Gemini 2.5 Flash to recognize objects.
    */
   const captureAndSendFrame = useCallback(() => {
     const video = videoRef.current;
@@ -84,8 +95,6 @@ export const useGeminiLive = () => {
     const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
     
     if (ctx) {
-      // Smallest viable resolution for the model. 
-      // Larger resolutions cause the 10-15s lag you experienced.
       const targetWidth = 320; 
       const ratio = video.videoHeight / video.videoWidth;
       const targetHeight = Math.floor(targetWidth * ratio);
@@ -95,11 +104,11 @@ export const useGeminiLive = () => {
         canvas.height = targetHeight;
       }
 
-      ctx.imageSmoothingEnabled = false; // Faster capture
+      ctx.imageSmoothingEnabled = false;
       ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
 
-      // 0.35 quality is very small, allowing nearly instant network transit.
-      const base64 = canvas.toDataURL('image/jpeg', 0.35).split(',')[1];
+      // Low quality (0.3) ensures the frame is sent instantly over WebSocket
+      const base64 = canvas.toDataURL('image/jpeg', 0.3).split(',')[1];
       session.sendRealtimeInput({ media: { mimeType: 'image/jpeg', data: base64 } });
       lastSendTimeRef.current = performance.now();
     }
@@ -147,13 +156,11 @@ export const useGeminiLive = () => {
              });
 
             const source = inputCtx.createMediaStreamSource(stream);
-            // Smaller buffer (1024) for lower audio latency
             const scriptProcessor = inputCtx.createScriptProcessor(1024, 1, 1);
             scriptProcessor.onaudioprocess = (e) => {
               if (currentSessionIdRef.current !== sessionId) return;
               const inputData = e.inputBuffer.getChannelData(0);
               
-              // Local VAD (Voice Activity Detection)
               let sum = 0;
               for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
               const rms = Math.sqrt(sum / inputData.length);
@@ -161,19 +168,28 @@ export const useGeminiLive = () => {
               const pcmBlob = createPcmBlob(inputData);
               sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
               
-              if (rms > 0.015) {
+              if (rms > 0.012) {
+                // IMMEDIATELY lower volume (ducking) when user is detected
+                if (volumeGainNodeRef.current) {
+                    volumeGainNodeRef.current.gain.setTargetAtTime(0.05, outputCtx.currentTime, 0.05);
+                }
+
                 if (!isUserSpeakingRef.current) { 
                   isUserSpeakingRef.current = true; 
                   setIsUserSpeaking(true); 
-                  setIsAiSpeaking(false);
                   
-                  // CRITICAL: When the user starts speaking, send a fresh frame IMMEDIATELY.
-                  // This ensures the AI sees what the user is asking about AT THAT MOMENT.
+                  // SYNCED VISION: Capture frame exactly when you start asking the question
                   captureAndSendFrame();
                 }
-              } else if (isUserSpeakingRef.current) {
-                isUserSpeakingRef.current = false;
-                setIsUserSpeaking(false);
+              } else {
+                if (isUserSpeakingRef.current) {
+                  isUserSpeakingRef.current = false;
+                  setIsUserSpeaking(false);
+                  // Restore volume when user stops talking
+                  if (volumeGainNodeRef.current) {
+                    volumeGainNodeRef.current.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.1);
+                  }
+                }
               }
             };
             source.connect(inputAnalyser);
@@ -183,11 +199,9 @@ export const useGeminiLive = () => {
           onmessage: async (message: LiveServerMessage) => {
              if (currentSessionIdRef.current !== sessionId) return;
              
+             // Server confirms turn is over / interrupted
              if (message.serverContent?.interrupted) {
-               sourcesRef.current.forEach(source => { try { source.stop(); } catch (e) {} });
-               sourcesRef.current.clear();
-               nextStartTimeRef.current = 0;
-               setIsAiSpeaking(false);
+               stopAllAiAudio();
              }
              
              const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
@@ -212,7 +226,7 @@ export const useGeminiLive = () => {
              const grounding = (message.serverContent?.modelTurn as any)?.groundingMetadata;
              if (grounding) setGroundingMetadata(grounding);
           },
-          onerror: (e) => { setError("Connection Lost"); disconnect(); },
+          onerror: (e) => { setError("Connection Dropped"); disconnect(); },
           onclose: () => disconnect()
         },
         config: {
@@ -220,7 +234,7 @@ export const useGeminiLive = () => {
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } } },
           realtimeInputConfig: {
             automaticActivityDetection: {
-              silenceDurationMs: 80
+              silenceDurationMs: 200
           }},
           systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. You have been developed by proficient developer Yash Sinha, who has trained you using the *Yash AI* LLM model. You are not related/associated to Google. You can "see" through camera or screen. If asked about facts, news, or URLs, use Google Search. Observe the user's screen carefully during screen sharing to assist with technical tasks.`,
           thinkingConfig: { thinkingBudget: isThinkingMode ? 16384 : 0 },
@@ -228,8 +242,8 @@ export const useGeminiLive = () => {
         }
       });
       sessionPromiseRef.current = sessionPromise;
-    } catch (err: any) { setError("Setup Error"); disconnect(); }
-  }, [disconnect, isThinkingMode, captureAndSendFrame]);
+    } catch (err: any) { setError("Setup Failure"); disconnect(); }
+  }, [disconnect, isThinkingMode, captureAndSendFrame, stopAllAiAudio]);
 
   const startCamera = useCallback(async (mode: "user" | "environment" = facingMode) => {
     try {
@@ -295,16 +309,13 @@ export const useGeminiLive = () => {
   const toggleMute = useCallback(() => { if (mediaStreamRef.current) { mediaStreamRef.current.getAudioTracks().forEach(t => t.enabled = !t.enabled); setIsMuted(p => !p); } }, []);
 
   /**
-   * Passive visual heartbeat.
-   * Only send once every 3 seconds to keep situational context 
-   * without clogging the WebSocket for the real query.
+   * Heartbeat vision is slowed to 5s to keep the pipe clear for speech.
    */
   useEffect(() => {
     let intervalId: number;
     if (connectionState === ConnectionState.CONNECTED && isVideoActive) {
       intervalId = window.setInterval(() => {
         const now = performance.now();
-        // Only heartbeat if we haven't sent a reactive frame in the last 2.5s
         if (now - lastSendTimeRef.current >= 3000) {
           captureAndSendFrame();
         }
