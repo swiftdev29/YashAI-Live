@@ -35,7 +35,7 @@ export const useGeminiLive = () => {
   // Vision Refs
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoStreamRef = useRef<MediaStream | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastSendTimeRef = useRef<number>(0);
 
   const isUserSpeakingRef = useRef<boolean>(false);
@@ -69,6 +69,40 @@ export const useGeminiLive = () => {
     setIsUserSpeaking(false);
     setIsAiSpeaking(false);
   }, []);
+
+  // Utility to send a high-priority "now" frame
+  const captureAndSendFrame = useCallback(() => {
+    const video = videoRef.current;
+    const session = activeSessionRef.current;
+    if (!isVideoActive || !video || video.readyState < 2 || !session) return;
+
+    if (!offscreenCanvasRef.current) {
+      offscreenCanvasRef.current = document.createElement('canvas');
+    }
+    const canvas = offscreenCanvasRef.current;
+    const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    
+    if (ctx) {
+      // Small resolution (320px) is plenty for the AI and drastically reduces latency
+      const targetWidth = 320;
+      const ratio = video.videoHeight / video.videoWidth;
+      const targetHeight = Math.floor(targetWidth * ratio);
+
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+      }
+
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'low'; // Low quality is faster to compute
+      ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+
+      // 0.5 quality JPEG is small enough to avoid buffer bloat
+      const base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1];
+      session.sendRealtimeInput({ media: { mimeType: 'image/jpeg', data: base64 } });
+      lastSendTimeRef.current = performance.now();
+    }
+  }, [isVideoActive]);
 
   const connect = useCallback(async () => {
     const sessionId = Math.random().toString(36).substring(7);
@@ -128,6 +162,8 @@ export const useGeminiLive = () => {
                   isUserSpeakingRef.current = true; 
                   setIsUserSpeaking(true); 
                   setIsAiSpeaking(false);
+                  // IMMEDIATE VISION CAPTURE when speech starts
+                  captureAndSendFrame();
                 }
               } else if (isUserSpeakingRef.current) {
                 isUserSpeakingRef.current = false;
@@ -183,12 +219,12 @@ export const useGeminiLive = () => {
       });
       sessionPromiseRef.current = sessionPromise;
     } catch (err: any) { setError("Initialization failed"); disconnect(); }
-  }, [disconnect, isThinkingMode]);
+  }, [disconnect, isThinkingMode, captureAndSendFrame]);
 
   const startCamera = useCallback(async (mode: "user" | "environment" = facingMode) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: mode, width: { ideal: 1280 }, height: { ideal: 720 } } 
+        video: { facingMode: mode, width: { ideal: 640 }, height: { ideal: 360 } } 
       });
       videoStreamRef.current = stream;
       if (videoRef.current) { 
@@ -250,52 +286,17 @@ export const useGeminiLive = () => {
   const toggleThinkingMode = useCallback(() => { if (connectionState === ConnectionState.DISCONNECTED) setIsThinkingMode(p => !p); }, [connectionState]);
   const toggleMute = useCallback(() => { if (mediaStreamRef.current) { mediaStreamRef.current.getAudioTracks().forEach(t => t.enabled = !t.enabled); setIsMuted(p => !p); } }, []);
 
-  // Optimized Real-Time Vision Capture
+  // Background Vision Loop (Steady Stream)
   useEffect(() => {
     let frameId: number;
     
-    // Initialize offscreen canvas once
-    if (!canvasRef.current) {
-      canvasRef.current = document.createElement('canvas');
-    }
-    const canvas = canvasRef.current;
-    
-    const sendFrame = () => {
-      const video = videoRef.current;
-      const session = activeSessionRef.current;
-      const now = performance.now();
-
-      // Check if it's time to send a frame (approx 2.5 FPS / every 400ms)
-      if (isVideoActive && connectionState === ConnectionState.CONNECTED && session && video && video.readyState >= 2) {
-        if (now - lastSendTimeRef.current >= 400) {
-          const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
-          if (ctx) {
-            // High-fidelity downscaling to 640px width (standard for model input)
-            const targetWidth = 640;
-            const ratio = video.videoHeight / video.videoWidth;
-            const targetHeight = Math.floor(targetWidth * ratio);
-
-            if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-              canvas.width = targetWidth;
-              canvas.height = targetHeight;
-            }
-
-            ctx.imageSmoothingEnabled = true;
-            ctx.imageSmoothingQuality = 'medium';
-            ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
-
-            // Use 0.7 quality to keep payload reasonably small but clear
-            const base64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
-            session.sendRealtimeInput({ media: { mimeType: 'image/jpeg', data: base64 } });
-            lastSendTimeRef.current = now;
-          }
-        }
-      }
-    };
-
     const loop = () => {
-      sendFrame();
-      // requestVideoFrameCallback is the gold standard for syncing with video refresh
+      const now = performance.now();
+      // Steady 1.5 FPS loop to maintain basic visual awareness without saturating the connection
+      if (now - lastSendTimeRef.current >= 700) {
+        captureAndSendFrame();
+      }
+      
       if (videoRef.current && 'requestVideoFrameCallback' in videoRef.current) {
         // @ts-ignore
         frameId = videoRef.current.requestVideoFrameCallback(loop);
@@ -313,7 +314,7 @@ export const useGeminiLive = () => {
         cancelAnimationFrame(frameId);
       }
     };
-  }, [isVideoActive, connectionState]);
+  }, [isVideoActive, connectionState, captureAndSendFrame]);
 
   return { connect, disconnect, connectionState, error, groundingMetadata, inputAnalyser: inputAnalyserRef.current, outputAnalyser: outputAnalyserRef.current, isMuted, toggleMute, videoRef, isVideoActive, videoSource, toggleVideo, toggleScreenShare, switchCamera, isUserSpeaking, isAiSpeaking, isThinkingMode, toggleThinkingMode };
 };
