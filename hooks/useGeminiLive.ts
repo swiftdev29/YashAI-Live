@@ -31,6 +31,7 @@ export const useGeminiLive = () => {
   const activeSessionRef = useRef<any>(null); 
   const currentSessionIdRef = useRef<string>('');
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
+  const groundingTimeoutRef = useRef<any>(null);
 
   // Vision Refs
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -68,6 +69,7 @@ export const useGeminiLive = () => {
     }
     
     stopAllAiAudio();
+    if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
     
     if (inputAudioContextRef.current) { try { await inputAudioContextRef.current.close(); } catch(e){} inputAudioContextRef.current = null; }
     if (outputAudioContextRef.current) { try { await outputAudioContextRef.current.close(); } catch(e){} outputAudioContextRef.current = null; }
@@ -76,6 +78,7 @@ export const useGeminiLive = () => {
     activeSessionRef.current = null;
     sessionPromiseRef.current = null;
     setIsUserSpeaking(false);
+    setGroundingMetadata(null);
   }, [stopAllAiAudio]);
 
   /**
@@ -168,7 +171,13 @@ export const useGeminiLive = () => {
               const pcmBlob = createPcmBlob(inputData);
               sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
               
-              if (rms > 0.012) {
+              // Dynamic Thresholding:
+              // If AI is speaking, threshold is higher (0.04) to avoid self-interruption from echo.
+              // If AI is silent, threshold is lower (0.012) for sensitivity.
+              const aiIsTalking = sourcesRef.current.size > 0;
+              const activeThreshold = aiIsTalking ? 0.04 : 0.012;
+
+              if (rms > activeThreshold) {
                 // IMMEDIATELY lower volume (ducking) when user is detected
                 if (volumeGainNodeRef.current) {
                     volumeGainNodeRef.current.gain.setTargetAtTime(0.05, outputCtx.currentTime, 0.05);
@@ -229,7 +238,14 @@ export const useGeminiLive = () => {
                                (message.serverContent as any)?.groundingMetadata || 
                                (message.serverContent?.modelTurn as any)?.groundingMetadata;
 
-             if (grounding) setGroundingMetadata(grounding);
+             if (grounding) {
+               setGroundingMetadata(grounding);
+               // Auto-clear reference sources after 6 seconds
+               if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
+               groundingTimeoutRef.current = setTimeout(() => {
+                 setGroundingMetadata(null);
+               }, 6000);
+             }
           },
           onerror: (e) => { setError("Connection Dropped"); disconnect(); },
           onclose: () => disconnect()
