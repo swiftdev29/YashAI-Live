@@ -1,4 +1,3 @@
-
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 import { ConnectionState, GroundingMetadata } from '../types';
@@ -41,6 +40,9 @@ export const useGeminiLive = () => {
   const videoSourceRef = useRef<"camera" | "screen" | "none">("none");
   const activeSessionRef = useRef<any>(null); 
   
+  // Wake Lock Ref
+  const wakeLockRef = useRef<any>(null);
+
   // Sync refs with state
   useEffect(() => {
     isVideoActiveRef.current = isVideoActive;
@@ -58,6 +60,49 @@ export const useGeminiLive = () => {
   const aiSpeakingTimerRef = useRef<any>(null);
   const speechAccumulatorRef = useRef<number>(0);
 
+  // --- Wake Lock Management ---
+  const requestWakeLock = useCallback(async () => {
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+        console.debug('Wake lock acquired');
+      } catch (err: any) {
+        console.warn(`Wake Lock failed: ${err.name}, ${err.message}`);
+      }
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(() => {
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release().then(() => {
+        wakeLockRef.current = null;
+        console.debug('Wake lock released');
+      });
+    }
+  }, []);
+
+  // --- Re-acquire Wake Lock on visibility change ---
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible' && connectionState === ConnectionState.CONNECTED) {
+        await requestWakeLock();
+      }
+      
+      // Ensure AudioContext is resumed in case the browser throttled it
+      if (document.visibilityState === 'visible') {
+        if (inputAudioContextRef.current?.state === 'suspended') {
+          await inputAudioContextRef.current.resume();
+        }
+        if (outputAudioContextRef.current?.state === 'suspended') {
+          await outputAudioContextRef.current.resume();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [connectionState, requestWakeLock]);
+
   // --- Fix: Declare ref for disconnect to resolve circular dependency and "used before declaration" error ---
   const disconnectRef = useRef<() => Promise<void>>(null as any);
 
@@ -67,19 +112,30 @@ export const useGeminiLive = () => {
       if (state === 'none') {
         navigator.mediaSession.metadata = null;
         navigator.mediaSession.playbackState = 'none';
-        // Clear stop action handler when session ends
         navigator.mediaSession.setActionHandler('stop', null);
+        navigator.mediaSession.setActionHandler('pause', null);
+        navigator.mediaSession.setActionHandler('play', null);
         return;
       }
+      
       navigator.mediaSession.metadata = new MediaMetadata({
         title: 'YashAI Voice Session',
         artist: 'Yash AI',
         artwork: [{ src: 'https://raw.githubusercontent.com/swiftdev29/Jee-mains-checker/refs/heads/main/icon-512.svg', sizes: '512x512', type: 'image/svg+xml' }]
       });
       navigator.mediaSession.playbackState = state;
-      // --- Fix: Use disconnectRef inside the handler to avoid direct dependency on disconnect variable before its declaration ---
+      
       navigator.mediaSession.setActionHandler('stop', () => {
         if (disconnectRef.current) disconnectRef.current();
+      });
+      
+      navigator.mediaSession.setActionHandler('pause', () => {
+        // Just inform the OS, don't necessarily stop capture unless desired
+        navigator.mediaSession.playbackState = 'paused';
+      });
+
+      navigator.mediaSession.setActionHandler('play', () => {
+        navigator.mediaSession.playbackState = 'playing';
       });
     }
   }, []);
@@ -96,6 +152,7 @@ export const useGeminiLive = () => {
 
   const disconnect = useCallback(async () => {
     stopVideo();
+    releaseWakeLock();
     updateMediaSession('none');
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
@@ -127,7 +184,7 @@ export const useGeminiLive = () => {
     setIsAiSpeaking(false);
     isUserSpeakingRef.current = false;
     currentVolumeRef.current = 0;
-  }, [stopVideo, updateMediaSession]);
+  }, [stopVideo, updateMediaSession, releaseWakeLock]);
 
   // --- Fix: Keep disconnectRef updated with the current disconnect function ---
   useEffect(() => {
@@ -289,16 +346,18 @@ export const useGeminiLive = () => {
       mediaStreamRef.current = stream;
       if (inputCtx.state === 'suspended') await inputCtx.resume();
       if (outputCtx.state === 'suspended') await outputCtx.resume();
+      
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const currentDateTime = new Date().toLocaleString();
       const sessionPromise = ai.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+        model: 'gemini-2.5-flash-native-audio-preview-09-2025',
         callbacks: {
           onopen: () => {
              if (currentSessionIdRef.current !== sessionId) return;
-             sessionPromise.then(session => {
+             sessionPromise.then(async (session) => {
                 activeSessionRef.current = session;
                 setConnectionState(ConnectionState.CONNECTED);
+                await requestWakeLock();
                 updateMediaSession('playing');
              });
             const source = inputCtx.createMediaStreamSource(stream);
@@ -392,7 +451,7 @@ export const useGeminiLive = () => {
         }
       });
     } catch (err: any) { setError("Failed to initialize."); setConnectionState(ConnectionState.ERROR); disconnect(); }
-  }, [disconnect, updateMediaSession, isThinkingMode]);
+  }, [disconnect, updateMediaSession, isThinkingMode, requestWakeLock]);
 
   useEffect(() => { return () => { disconnect(); }; }, [disconnect]);
 
