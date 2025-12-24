@@ -42,7 +42,6 @@ export const useGeminiLive = () => {
   const nextStartTimeRef = useRef<number>(0);
 
   const disconnect = useCallback(async () => {
-    // Stop Video
     setIsVideoActive(false);
     setVideoSource("none");
     if (videoStreamRef.current) {
@@ -51,7 +50,6 @@ export const useGeminiLive = () => {
     }
     if (videoRef.current) videoRef.current.srcObject = null;
     
-    // Stop Audio
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach(track => track.stop());
       mediaStreamRef.current = null;
@@ -70,7 +68,10 @@ export const useGeminiLive = () => {
     setIsAiSpeaking(false);
   }, []);
 
-  // Utility to send a high-priority "now" frame
+  /**
+   * Drastically optimized frame capture.
+   * Low resolution (320px) and low quality (0.35) are KEY to avoiding WebSocket buffer bloat.
+   */
   const captureAndSendFrame = useCallback(() => {
     const video = videoRef.current;
     const session = activeSessionRef.current;
@@ -83,8 +84,9 @@ export const useGeminiLive = () => {
     const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
     
     if (ctx) {
-      // Small resolution (320px) is plenty for the AI and drastically reduces latency
-      const targetWidth = 320;
+      // Smallest viable resolution for the model. 
+      // Larger resolutions cause the 10-15s lag you experienced.
+      const targetWidth = 320; 
       const ratio = video.videoHeight / video.videoWidth;
       const targetHeight = Math.floor(targetWidth * ratio);
 
@@ -93,12 +95,11 @@ export const useGeminiLive = () => {
         canvas.height = targetHeight;
       }
 
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'low'; // Low quality is faster to compute
+      ctx.imageSmoothingEnabled = false; // Faster capture
       ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
 
-      // 0.5 quality JPEG is small enough to avoid buffer bloat
-      const base64 = canvas.toDataURL('image/jpeg', 0.5).split(',')[1];
+      // 0.35 quality is very small, allowing nearly instant network transit.
+      const base64 = canvas.toDataURL('image/jpeg', 0.35).split(',')[1];
       session.sendRealtimeInput({ media: { mimeType: 'image/jpeg', data: base64 } });
       lastSendTimeRef.current = performance.now();
     }
@@ -146,10 +147,13 @@ export const useGeminiLive = () => {
              });
 
             const source = inputCtx.createMediaStreamSource(stream);
-            const scriptProcessor = inputCtx.createScriptProcessor(2048, 1, 1);
+            // Smaller buffer (1024) for lower audio latency
+            const scriptProcessor = inputCtx.createScriptProcessor(1024, 1, 1);
             scriptProcessor.onaudioprocess = (e) => {
               if (currentSessionIdRef.current !== sessionId) return;
               const inputData = e.inputBuffer.getChannelData(0);
+              
+              // Local VAD (Voice Activity Detection)
               let sum = 0;
               for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
               const rms = Math.sqrt(sum / inputData.length);
@@ -157,12 +161,14 @@ export const useGeminiLive = () => {
               const pcmBlob = createPcmBlob(inputData);
               sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
               
-              if (rms > 0.012) {
+              if (rms > 0.015) {
                 if (!isUserSpeakingRef.current) { 
                   isUserSpeakingRef.current = true; 
                   setIsUserSpeaking(true); 
                   setIsAiSpeaking(false);
-                  // IMMEDIATE VISION CAPTURE when speech starts
+                  
+                  // CRITICAL: When the user starts speaking, send a fresh frame IMMEDIATELY.
+                  // This ensures the AI sees what the user is asking about AT THAT MOMENT.
                   captureAndSendFrame();
                 }
               } else if (isUserSpeakingRef.current) {
@@ -206,7 +212,7 @@ export const useGeminiLive = () => {
              const grounding = (message.serverContent?.modelTurn as any)?.groundingMetadata;
              if (grounding) setGroundingMetadata(grounding);
           },
-          onerror: (e) => { console.error(e); setError("Connection Error"); disconnect(); },
+          onerror: (e) => { setError("Connection Lost"); disconnect(); },
           onclose: () => disconnect()
         },
         config: {
@@ -218,13 +224,13 @@ export const useGeminiLive = () => {
         }
       });
       sessionPromiseRef.current = sessionPromise;
-    } catch (err: any) { setError("Initialization failed"); disconnect(); }
+    } catch (err: any) { setError("Setup Error"); disconnect(); }
   }, [disconnect, isThinkingMode, captureAndSendFrame]);
 
   const startCamera = useCallback(async (mode: "user" | "environment" = facingMode) => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: mode, width: { ideal: 640 }, height: { ideal: 360 } } 
+        video: { facingMode: mode, width: { ideal: 640 }, height: { ideal: 480 } } 
       });
       videoStreamRef.current = stream;
       if (videoRef.current) { 
@@ -276,9 +282,7 @@ export const useGeminiLive = () => {
     const newMode = facingMode === "user" ? "environment" : "user";
     setFacingMode(newMode);
     if (videoSource === "camera") {
-       if (videoStreamRef.current) {
-         videoStreamRef.current.getTracks().forEach(track => track.stop());
-       }
+       if (videoStreamRef.current) videoStreamRef.current.getTracks().forEach(track => track.stop());
        await startCamera(newMode);
     }
   }, [facingMode, videoSource, startCamera]);
@@ -286,34 +290,23 @@ export const useGeminiLive = () => {
   const toggleThinkingMode = useCallback(() => { if (connectionState === ConnectionState.DISCONNECTED) setIsThinkingMode(p => !p); }, [connectionState]);
   const toggleMute = useCallback(() => { if (mediaStreamRef.current) { mediaStreamRef.current.getAudioTracks().forEach(t => t.enabled = !t.enabled); setIsMuted(p => !p); } }, []);
 
-  // Background Vision Loop (Steady Stream)
+  /**
+   * Passive visual heartbeat.
+   * Only send once every 3 seconds to keep situational context 
+   * without clogging the WebSocket for the real query.
+   */
   useEffect(() => {
-    let frameId: number;
-    
-    const loop = () => {
-      const now = performance.now();
-      // Steady 1.5 FPS loop to maintain basic visual awareness without saturating the connection
-      if (now - lastSendTimeRef.current >= 700) {
-        captureAndSendFrame();
-      }
-      
-      if (videoRef.current && 'requestVideoFrameCallback' in videoRef.current) {
-        // @ts-ignore
-        frameId = videoRef.current.requestVideoFrameCallback(loop);
-      } else {
-        frameId = requestAnimationFrame(loop);
-      }
-    };
-
-    frameId = requestAnimationFrame(loop);
-    return () => {
-      if (videoRef.current && 'cancelVideoFrameCallback' in videoRef.current) {
-        // @ts-ignore
-        videoRef.current.cancelVideoFrameCallback(frameId);
-      } else {
-        cancelAnimationFrame(frameId);
-      }
-    };
+    let intervalId: number;
+    if (connectionState === ConnectionState.CONNECTED && isVideoActive) {
+      intervalId = window.setInterval(() => {
+        const now = performance.now();
+        // Only heartbeat if we haven't sent a reactive frame in the last 2.5s
+        if (now - lastSendTimeRef.current >= 3000) {
+          captureAndSendFrame();
+        }
+      }, 1000);
+    }
+    return () => clearInterval(intervalId);
   }, [isVideoActive, connectionState, captureAndSendFrame]);
 
   return { connect, disconnect, connectionState, error, groundingMetadata, inputAnalyser: inputAnalyserRef.current, outputAnalyser: outputAnalyserRef.current, isMuted, toggleMute, videoRef, isVideoActive, videoSource, toggleVideo, toggleScreenShare, switchCamera, isUserSpeaking, isAiSpeaking, isThinkingMode, toggleThinkingMode };
