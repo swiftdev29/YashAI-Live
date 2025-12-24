@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { useGeminiLive } from './hooks/useGeminiLive';
 import { ConnectionState } from './types';
@@ -46,10 +47,16 @@ const MainApp: React.FC = () => {
         <div className="relative w-full max-w-[420px] aspect-square flex items-center justify-center">
             <div className={`absolute inset-[-5%] rounded-full border transition-all duration-700 ${isVideoActive ? 'border-blue-500/20 opacity-100 scale-100' : 'border-transparent opacity-0 scale-95'}`}></div>
             
-            <div className={`absolute inset-[15%] rounded-full overflow-hidden z-0 transition-all duration-700 ${isVideoActive ? 'opacity-100 scale-100 shadow-[0_0_50px_rgba(0,0,0,0.6)]' : 'opacity-0 scale-50'}`}>
-                <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full object-cover opacity-60 mix-blend-lighten ${videoSource === 'screen' ? 'scale-110' : ''}`} />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20"></div>
-                <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-500/80 backdrop-blur-md px-2 py-0.5 rounded text-[8px] font-bold tracking-tighter animate-pulse">LIVE STREAM</div>
+            <div className={`absolute inset-[10%] rounded-full overflow-hidden z-0 transition-all duration-700 shadow-[0_0_80px_rgba(59,130,246,0.15)] ${isVideoActive ? 'opacity-100 scale-100' : 'opacity-0 scale-50'}`}>
+                <video 
+                  ref={videoRef} 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                  className={`w-full h-full object-cover transition-opacity duration-500 ${isVideoActive ? 'opacity-100' : 'opacity-0'}`} 
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent"></div>
+                <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-blue-600/60 backdrop-blur-md px-3 py-0.5 rounded-full text-[8px] font-bold tracking-widest uppercase animate-pulse border border-white/10">AI Vision Enabled</div>
             </div>
 
             <div className="w-full h-full relative z-10 pointer-events-none drop-shadow-[0_0_15px_rgba(59,130,246,0.3)]">
@@ -158,7 +165,7 @@ const App: React.FC = () => {
             <div className="z-10 w-full max-w-sm p-8 bg-white/5 backdrop-blur-2xl rounded-3xl border border-white/10 shadow-2xl flex flex-col gap-6">
                 <div className="text-center">
                     <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 mx-auto mb-6 flex items-center justify-center">
-                        <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.131A8 8 0 008 8m0 0a8 8 0 00-8 8c0 2.472.345 4.865.99 7.131M8 8a8 8 0 0016 0c0-2.472-.345-4.865-.99-7.131" /></svg>
+                        <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.131A8 8 0 008 8m0 0a8 8 0 00-8 8c0 2.472.345 4.865.99 7.131M8 8a8 8 0 0016 0c0-2.472-.345-4.865-.99-7.131M8 8a8 8 0 0016 0c0-2.472-.345-4.865-.99-7.131" /></svg>
                     </div>
                     <h1 className="text-xl font-medium mb-2">Security Check</h1>
                 </div>
