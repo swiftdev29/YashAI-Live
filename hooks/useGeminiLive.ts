@@ -159,7 +159,9 @@ export const useGeminiLive = () => {
              });
 
             const source = inputCtx.createMediaStreamSource(stream);
-            const scriptProcessor = inputCtx.createScriptProcessor(1024, 1, 1);
+            // Reduced buffer size from 1024 to 512 for lower latency input (send faster)
+            const scriptProcessor = inputCtx.createScriptProcessor(512, 1, 1);
+            
             scriptProcessor.onaudioprocess = (e) => {
               if (currentSessionIdRef.current !== sessionId) return;
               const inputData = e.inputBuffer.getChannelData(0);
@@ -172,29 +174,27 @@ export const useGeminiLive = () => {
               sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
               
               // Dynamic Thresholding:
-              // If AI is speaking, threshold is higher (0.04) to avoid self-interruption from echo.
-              // If AI is silent, threshold is lower (0.012) for sensitivity.
+              // If AI is speaking, threshold is slightly higher (0.025) to prevent echo triggering,
+              // but low enough to catch user interruption efficiently.
               const aiIsTalking = sourcesRef.current.size > 0;
-              const activeThreshold = aiIsTalking ? 0.04 : 0.012;
+              const activeThreshold = aiIsTalking ? 0.025 : 0.01;
 
               if (rms > activeThreshold) {
-                // IMMEDIATELY lower volume (ducking) when user is detected
+                // INSTANT DUCKING: Mute immediately (0 volume, 0.01s ramp) to avoid "talk over" feeling
                 if (volumeGainNodeRef.current) {
-                    volumeGainNodeRef.current.gain.setTargetAtTime(0.05, outputCtx.currentTime, 0.05);
+                    volumeGainNodeRef.current.gain.setTargetAtTime(0, outputCtx.currentTime, 0.01);
                 }
 
                 if (!isUserSpeakingRef.current) { 
                   isUserSpeakingRef.current = true; 
                   setIsUserSpeaking(true); 
-                  
-                  // SYNCED VISION: Capture frame exactly when you start asking the question
                   captureAndSendFrame();
                 }
               } else {
                 if (isUserSpeakingRef.current) {
                   isUserSpeakingRef.current = false;
                   setIsUserSpeaking(false);
-                  // Restore volume when user stops talking
+                  // Smoothly restore volume when user stops talking
                   if (volumeGainNodeRef.current) {
                     volumeGainNodeRef.current.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.1);
                   }
