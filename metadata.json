@@ -3,6 +3,7 @@
   "description": "A real-time voice assistant powered by YashAI.",
   "requestFramePermissions": [
     "microphone",
-    "camera"
+    "camera",
+    "display-capture"
   ]
 }
