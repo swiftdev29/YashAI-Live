@@ -158,7 +158,13 @@ export const useGeminiLive = () => {
                 setConnectionState(ConnectionState.CONNECTED);
              });
 
+            // Input Pipeline: Source -> Gain (1.5x) -> Analyser -> ScriptProcessor -> Destination
             const source = inputCtx.createMediaStreamSource(stream);
+            
+            // 1.5x Input Gain Boost
+            const inputGain = inputCtx.createGain();
+            inputGain.gain.value = 1.5;
+
             // Reduced buffer size from 1024 to 512 for lower latency input (send faster)
             const scriptProcessor = inputCtx.createScriptProcessor(512, 1, 1);
             
@@ -180,9 +186,9 @@ export const useGeminiLive = () => {
               const activeThreshold = aiIsTalking ? 0.025 : 0.01;
 
               if (rms > activeThreshold) {
-                // INSTANT DUCKING: Mute immediately (0 volume, 0.01s ramp) to avoid "talk over" feeling
+                // SOFT DUCKING: Lower volume to 0.2 (20%) instead of 0 (Mute)
                 if (volumeGainNodeRef.current) {
-                    volumeGainNodeRef.current.gain.setTargetAtTime(0, outputCtx.currentTime, 0.01);
+                    volumeGainNodeRef.current.gain.setTargetAtTime(0.2, outputCtx.currentTime, 0.01);
                 }
 
                 if (!isUserSpeakingRef.current) { 
@@ -201,7 +207,9 @@ export const useGeminiLive = () => {
                 }
               }
             };
-            source.connect(inputAnalyser);
+            
+            source.connect(inputGain);
+            inputGain.connect(inputAnalyser);
             inputAnalyser.connect(scriptProcessor);
             scriptProcessor.connect(inputCtx.destination);
           },
@@ -257,7 +265,7 @@ export const useGeminiLive = () => {
             automaticActivityDetection: {
               silenceDurationMs: 200
           }},
-          systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. You have been developed by proficient developer Yash Sinha, who has trained you using the *Yash AI* LLM model. You are not related/associated to Google. You can "see" through camera or screen. If asked about facts, news, or URLs, use Google Search. Observe the user's screen carefully during screen sharing to assist with technical tasks.`,
+          systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. You have been developed by proficient developer Yash Sinha, who has trained you using the *Yash AI* LLM model. You are not related/associated to Google. You can use expressions in your voice like laughing, breathing and others whenever necessary. Converse with the user in your default American accent in English unless the user speaks in another language. You can "see" through camera or screen. If asked about facts, news, or URLs, use Google Search. Observe the user's screen carefully during screen sharing to assist with technical tasks.`,
           thinkingConfig: { thinkingBudget: isThinkingMode ? 16384 : 0 },
           tools: [{ googleSearch: {} }] 
         }
