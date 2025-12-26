@@ -180,7 +180,6 @@ export const useGeminiLive = () => {
               // CRITICAL: Check mute Ref. If muted, ensure volume is 100% and do not process audio.
               if (isMutedRef.current) {
                   if (volumeGainNodeRef.current) {
-                      // Check roughly if it's not 1 (accounting for float precision)
                       if (Math.abs(volumeGainNodeRef.current.gain.value - 1.0) > 0.01) {
                          volumeGainNodeRef.current.gain.cancelScheduledValues(outputCtx.currentTime);
                          volumeGainNodeRef.current.gain.setValueAtTime(1.0, outputCtx.currentTime);
@@ -199,13 +198,16 @@ export const useGeminiLive = () => {
               sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
               
               const aiIsTalking = sourcesRef.current.size > 0;
-              // Slightly higher threshold to prevent breathing noise from ducking AI
-              const activeThreshold = aiIsTalking ? 0.03 : 0.01;
+              
+              // TUNING: Increased threshold (0.04) to prevent background noise from ducking the AI,
+              // while still being sensitive enough for clear speech.
+              const activeThreshold = aiIsTalking ? 0.04 : 0.01;
 
               if (rms > activeThreshold) {
-                // Duck volume if user is speaking
+                // TUNING: Aggressive ducking (0.05) to make the interrupt feel immediate/responsive
+                // even before the API processes the text.
                 if (volumeGainNodeRef.current) {
-                    volumeGainNodeRef.current.gain.setTargetAtTime(0.2, outputCtx.currentTime, 0.05);
+                    volumeGainNodeRef.current.gain.setTargetAtTime(0.05, outputCtx.currentTime, 0.05);
                 }
 
                 if (!isUserSpeakingRef.current) { 
@@ -242,15 +244,10 @@ export const useGeminiLive = () => {
                const ctx = outputAudioContextRef.current;
                if (!ctx) return;
                
-               // Ensure context is running (fixes silent output on iOS/Android sometimes)
                if (ctx.state === 'suspended') await ctx.resume();
 
                const audioBuffer = await decodeAudioData(base64ToBytes(base64Audio), ctx, 24000, 1);
                
-               // Scheduling Logic:
-               // 1. If nextStartTime is in the past (buffer underrun), reset to now.
-               // 2. Otherwise, schedule at nextStartTime.
-               // This prevents "catch up" speed-ups or silence gaps.
                let startTime = nextStartTimeRef.current;
                if (startTime < ctx.currentTime) {
                    startTime = ctx.currentTime;
