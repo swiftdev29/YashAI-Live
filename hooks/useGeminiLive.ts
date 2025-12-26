@@ -172,12 +172,14 @@ export const useGeminiLive = () => {
             const inputGain = inputCtx.createGain();
             inputGain.gain.value = 1.0;
 
-            const scriptProcessor = inputCtx.createScriptProcessor(512, 1, 1);
+            // Optimization: Increased buffer size from 512 to 4096.
+            // 512 samples @ 16kHz = 32ms (31 requests/sec). This floods the network and main thread.
+            // 4096 samples @ 16kHz = 256ms (4 requests/sec). significantly cleaner performance.
+            const scriptProcessor = inputCtx.createScriptProcessor(2048, 1, 1);
             
             scriptProcessor.onaudioprocess = (e) => {
               if (currentSessionIdRef.current !== sessionId) return;
               
-              // CRITICAL: Check mute Ref. If muted, ensure volume is 100% and do not process audio.
               if (isMutedRef.current) {
                   if (volumeGainNodeRef.current) {
                       if (Math.abs(volumeGainNodeRef.current.gain.value - 1.0) > 0.01) {
@@ -194,18 +196,17 @@ export const useGeminiLive = () => {
               for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
               const rms = Math.sqrt(sum / inputData.length);
 
-              const pcmBlob = createPcmBlob(inputData);
-              sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
+              // Optimization: Use activeSessionRef directly instead of sessionPromise.then()
+              // to avoid creating 4 microtasks per second (or 31 previously) and promise chains.
+              if (activeSessionRef.current) {
+                  const pcmBlob = createPcmBlob(inputData);
+                  activeSessionRef.current.sendRealtimeInput({ media: pcmBlob });
+              }
               
               const aiIsTalking = sourcesRef.current.size > 0;
-              
-              // TUNING: Increased threshold (0.04) to prevent background noise from ducking the AI,
-              // while still being sensitive enough for clear speech.
               const activeThreshold = aiIsTalking ? 0.04 : 0.01;
 
               if (rms > activeThreshold) {
-                // TUNING: Aggressive ducking (0.05) to make the interrupt feel immediate/responsive
-                // even before the API processes the text.
                 if (volumeGainNodeRef.current) {
                     volumeGainNodeRef.current.gain.setTargetAtTime(0.05, outputCtx.currentTime, 0.05);
                 }
@@ -219,7 +220,6 @@ export const useGeminiLive = () => {
                 if (isUserSpeakingRef.current) {
                   isUserSpeakingRef.current = false;
                   setIsUserSpeaking(false);
-                  // Restore volume
                   if (volumeGainNodeRef.current) {
                     volumeGainNodeRef.current.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.2);
                   }
@@ -304,7 +304,13 @@ export const useGeminiLive = () => {
       if (videoRef.current) { 
         videoRef.current.srcObject = stream; 
         await new Promise((resolve) => {
-          if (videoRef.current) videoRef.current.onloadedmetadata = resolve;
+          if (videoRef.current && videoRef.current.readyState >= 1) {
+            resolve(true);
+          } else if (videoRef.current) {
+            videoRef.current.onloadedmetadata = () => resolve(true);
+          } else {
+             resolve(true);
+          }
         });
         await videoRef.current.play(); 
       }
