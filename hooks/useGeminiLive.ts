@@ -27,6 +27,10 @@ export const useGeminiLive = () => {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   
+  // State Refs (to access fresh state inside closures/callbacks)
+  const isMutedRef = useRef<boolean>(false);
+  const isUserSpeakingRef = useRef<boolean>(false);
+  
   // Session Refs
   const activeSessionRef = useRef<any>(null); 
   const currentSessionIdRef = useRef<string>('');
@@ -39,7 +43,6 @@ export const useGeminiLive = () => {
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastSendTimeRef = useRef<number>(0);
 
-  const isUserSpeakingRef = useRef<boolean>(false);
   const nextStartTimeRef = useRef<number>(0);
 
   /**
@@ -52,6 +55,14 @@ export const useGeminiLive = () => {
     sourcesRef.current.clear();
     nextStartTimeRef.current = 0;
     setIsAiSpeaking(false);
+    
+    // Immediate volume restoration on interrupt
+    if (outputAudioContextRef.current && volumeGainNodeRef.current) {
+        try {
+          volumeGainNodeRef.current.gain.cancelScheduledValues(outputAudioContextRef.current.currentTime);
+          volumeGainNodeRef.current.gain.setValueAtTime(1.0, outputAudioContextRef.current.currentTime);
+        } catch(e) {}
+    }
   }, []);
 
   const disconnect = useCallback(async () => {
@@ -82,9 +93,7 @@ export const useGeminiLive = () => {
   }, [stopAllAiAudio]);
 
   /**
-   * Optimized Frame Capture:
-   * 320px width and 0.3 quality are MANDATORY to prevent the 15s lag.
-   * This resolution is still perfect for Gemini 2.5 Flash to recognize objects.
+   * Optimized Frame Capture
    */
   const captureAndSendFrame = useCallback(() => {
     const video = videoRef.current;
@@ -110,7 +119,6 @@ export const useGeminiLive = () => {
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
 
-      // Low quality (0.3) ensures the frame is sent instantly over WebSocket
       const base64 = canvas.toDataURL('image/jpeg', 0.3).split(',')[1];
       session.sendRealtimeInput({ media: { mimeType: 'image/jpeg', data: base64 } });
       lastSendTimeRef.current = performance.now();
@@ -158,18 +166,29 @@ export const useGeminiLive = () => {
                 setConnectionState(ConnectionState.CONNECTED);
              });
 
-            // Input Pipeline: Source -> Gain (1.5x) -> Analyser -> ScriptProcessor -> Destination
             const source = inputCtx.createMediaStreamSource(stream);
             
-            // 1.5x Input Gain Boost
+            // Gain at 1.0 to avoid amplifying noise floor
             const inputGain = inputCtx.createGain();
-            inputGain.gain.value = 1.5;
+            inputGain.gain.value = 1.0;
 
-            // Reduced buffer size from 1024 to 512 for lower latency input (send faster)
             const scriptProcessor = inputCtx.createScriptProcessor(512, 1, 1);
             
             scriptProcessor.onaudioprocess = (e) => {
               if (currentSessionIdRef.current !== sessionId) return;
+              
+              // CRITICAL: Check mute Ref. If muted, ensure volume is 100% and do not process audio.
+              if (isMutedRef.current) {
+                  if (volumeGainNodeRef.current) {
+                      // Check roughly if it's not 1 (accounting for float precision)
+                      if (Math.abs(volumeGainNodeRef.current.gain.value - 1.0) > 0.01) {
+                         volumeGainNodeRef.current.gain.cancelScheduledValues(outputCtx.currentTime);
+                         volumeGainNodeRef.current.gain.setValueAtTime(1.0, outputCtx.currentTime);
+                      }
+                  }
+                  return; 
+              }
+
               const inputData = e.inputBuffer.getChannelData(0);
               
               let sum = 0;
@@ -179,16 +198,14 @@ export const useGeminiLive = () => {
               const pcmBlob = createPcmBlob(inputData);
               sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
               
-              // Dynamic Thresholding:
-              // If AI is speaking, threshold is slightly higher (0.025) to prevent echo triggering,
-              // but low enough to catch user interruption efficiently.
               const aiIsTalking = sourcesRef.current.size > 0;
-              const activeThreshold = aiIsTalking ? 0.025 : 0.01;
+              // Slightly higher threshold to prevent breathing noise from ducking AI
+              const activeThreshold = aiIsTalking ? 0.03 : 0.01;
 
               if (rms > activeThreshold) {
-                // SOFT DUCKING: Lower volume to 0.2 (20%) instead of 0 (Mute)
+                // Duck volume if user is speaking
                 if (volumeGainNodeRef.current) {
-                    volumeGainNodeRef.current.gain.setTargetAtTime(0.2, outputCtx.currentTime, 0.01);
+                    volumeGainNodeRef.current.gain.setTargetAtTime(0.2, outputCtx.currentTime, 0.05);
                 }
 
                 if (!isUserSpeakingRef.current) { 
@@ -200,9 +217,9 @@ export const useGeminiLive = () => {
                 if (isUserSpeakingRef.current) {
                   isUserSpeakingRef.current = false;
                   setIsUserSpeaking(false);
-                  // Smoothly restore volume when user stops talking
+                  // Restore volume
                   if (volumeGainNodeRef.current) {
-                    volumeGainNodeRef.current.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.1);
+                    volumeGainNodeRef.current.gain.setTargetAtTime(1.0, outputCtx.currentTime, 0.2);
                   }
                 }
               }
@@ -216,7 +233,6 @@ export const useGeminiLive = () => {
           onmessage: async (message: LiveServerMessage) => {
              if (currentSessionIdRef.current !== sessionId) return;
              
-             // Server confirms turn is over / interrupted
              if (message.serverContent?.interrupted) {
                stopAllAiAudio();
              }
@@ -225,30 +241,42 @@ export const useGeminiLive = () => {
              if (base64Audio) {
                const ctx = outputAudioContextRef.current;
                if (!ctx) return;
-               const now = ctx.currentTime;
-               nextStartTimeRef.current = Math.max(nextStartTimeRef.current, now);
+               
+               // Ensure context is running (fixes silent output on iOS/Android sometimes)
+               if (ctx.state === 'suspended') await ctx.resume();
+
                const audioBuffer = await decodeAudioData(base64ToBytes(base64Audio), ctx, 24000, 1);
+               
+               // Scheduling Logic:
+               // 1. If nextStartTime is in the past (buffer underrun), reset to now.
+               // 2. Otherwise, schedule at nextStartTime.
+               // This prevents "catch up" speed-ups or silence gaps.
+               let startTime = nextStartTimeRef.current;
+               if (startTime < ctx.currentTime) {
+                   startTime = ctx.currentTime;
+               }
+
                const source = ctx.createBufferSource();
                source.buffer = audioBuffer;
                source.connect(volumeGainNode);
+               
                source.addEventListener('ended', () => {
                  sourcesRef.current.delete(source);
                  if (sourcesRef.current.size === 0) setIsAiSpeaking(false);
                });
-               source.start(nextStartTimeRef.current);
-               nextStartTimeRef.current += audioBuffer.duration;
+               
+               source.start(startTime);
+               nextStartTimeRef.current = startTime + audioBuffer.duration;
                sourcesRef.current.add(source);
                setIsAiSpeaking(true);
              }
              
-             // Check all possible locations for grounding metadata
              const grounding = (message as any)?.groundingMetadata || 
                                (message.serverContent as any)?.groundingMetadata || 
                                (message.serverContent?.modelTurn as any)?.groundingMetadata;
 
              if (grounding) {
                setGroundingMetadata(grounding);
-               // Auto-clear reference sources after 6 seconds
                if (groundingTimeoutRef.current) clearTimeout(groundingTimeoutRef.current);
                groundingTimeoutRef.current = setTimeout(() => {
                  setGroundingMetadata(null);
@@ -261,10 +289,6 @@ export const useGeminiLive = () => {
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } } },
-          realtimeInputConfig: {
-            automaticActivityDetection: {
-              silenceDurationMs: 200
-          }},
           systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. You have been developed by proficient developer Yash Sinha, who has trained you using the *Yash AI* LLM model. You are not related/associated to Google. You can use expressions in your voice like laughing, breathing and others whenever necessary. Converse with the user in your default American accent in English unless the user speaks in another language. You can "see" through camera or screen. If asked about facts, news, or URLs, use Google Search. Observe the user's screen carefully during screen sharing to assist with technical tasks.`,
           thinkingConfig: { thinkingBudget: isThinkingMode ? 16384 : 0 },
           tools: [{ googleSearch: {} }] 
@@ -335,10 +359,21 @@ export const useGeminiLive = () => {
   }, [facingMode, videoSource, startCamera]);
 
   const toggleThinkingMode = useCallback(() => { if (connectionState === ConnectionState.DISCONNECTED) setIsThinkingMode(p => !p); }, [connectionState]);
-  const toggleMute = useCallback(() => { if (mediaStreamRef.current) { mediaStreamRef.current.getAudioTracks().forEach(t => t.enabled = !t.enabled); setIsMuted(p => !p); } }, []);
+  
+  // Toggle Mute & Update Ref
+  const toggleMute = useCallback(() => { 
+    if (mediaStreamRef.current) { 
+      mediaStreamRef.current.getAudioTracks().forEach(t => t.enabled = !t.enabled); 
+      setIsMuted(prev => {
+        const newVal = !prev;
+        isMutedRef.current = newVal;
+        return newVal;
+      });
+    } 
+  }, []);
 
   /**
-   * Heartbeat vision is slowed to 5s to keep the pipe clear for speech.
+   * Heartbeat vision
    */
   useEffect(() => {
     let intervalId: number;
