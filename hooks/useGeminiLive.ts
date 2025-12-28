@@ -107,7 +107,11 @@ export const useGeminiLive = () => {
     const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
     
     if (ctx) {
-      const targetWidth = 320; 
+      // Improved quality settings
+      const isScreen = videoSource === "screen";
+      const targetWidth = isScreen ? 800 : 480; // Higher resolution for screen share text readability
+      const quality = isScreen ? 0.6 : 0.5;     // Higher JPEG quality
+      
       const ratio = video.videoHeight / video.videoWidth;
       const targetHeight = Math.floor(targetWidth * ratio);
 
@@ -116,14 +120,14 @@ export const useGeminiLive = () => {
         canvas.height = targetHeight;
       }
 
-      ctx.imageSmoothingEnabled = false;
+      ctx.imageSmoothingEnabled = true; 
       ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
 
-      const base64 = canvas.toDataURL('image/jpeg', 0.3).split(',')[1];
+      const base64 = canvas.toDataURL('image/jpeg', quality).split(',')[1];
       session.sendRealtimeInput({ media: { mimeType: 'image/jpeg', data: base64 } });
       lastSendTimeRef.current = performance.now();
     }
-  }, [isVideoActive]);
+  }, [isVideoActive, videoSource]);
 
   const connect = useCallback(async () => {
     const sessionId = Math.random().toString(36).substring(7);
@@ -172,10 +176,8 @@ export const useGeminiLive = () => {
             const inputGain = inputCtx.createGain();
             inputGain.gain.value = 1.0;
 
-            // Optimization: Increased buffer size from 512 to 4096.
-            // 512 samples @ 16kHz = 32ms (31 requests/sec). This floods the network and main thread.
-            // 4096 samples @ 16kHz = 256ms (4 requests/sec). significantly cleaner performance.
-            const scriptProcessor = inputCtx.createScriptProcessor(2048, 1, 1);
+            // Optimization: Adjusted buffer size to 1024 (64ms) for lower latency while maintaining network stability.
+            const scriptProcessor = inputCtx.createScriptProcessor(1024, 1, 1);
             
             scriptProcessor.onaudioprocess = (e) => {
               if (currentSessionIdRef.current !== sessionId) return;
@@ -197,7 +199,7 @@ export const useGeminiLive = () => {
               const rms = Math.sqrt(sum / inputData.length);
 
               // Optimization: Use activeSessionRef directly instead of sessionPromise.then()
-              // to avoid creating 4 microtasks per second (or 31 previously) and promise chains.
+              // to avoid creating microtasks per second and promise chains.
               if (activeSessionRef.current) {
                   const pcmBlob = createPcmBlob(inputData);
                   activeSessionRef.current.sendRealtimeInput({ media: pcmBlob });
