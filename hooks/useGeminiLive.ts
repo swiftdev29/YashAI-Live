@@ -124,8 +124,12 @@ export const useGeminiLive = () => {
       ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
 
       const base64 = canvas.toDataURL('image/jpeg', quality).split(',')[1];
-      session.sendRealtimeInput({ media: { mimeType: 'image/jpeg', data: base64 } });
-      lastSendTimeRef.current = performance.now();
+      try {
+        session.sendRealtimeInput({ video: { mimeType: 'image/jpeg', data: base64 } });
+        lastSendTimeRef.current = performance.now();
+      } catch (e) {
+        console.warn('Frame drop:', e);
+      }
     }
   }, [isVideoActive, videoSource]);
 
@@ -157,7 +161,7 @@ export const useGeminiLive = () => {
       });
       mediaStreamRef.current = stream;
 
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const currentDateTime = new Date().toLocaleString();
       
       const sessionPromise = ai.live.connect({
@@ -202,7 +206,11 @@ export const useGeminiLive = () => {
               // to avoid creating microtasks per second and promise chains.
               if (activeSessionRef.current) {
                   const pcmBlob = createPcmBlob(inputData);
-                  activeSessionRef.current.sendRealtimeInput({ media: pcmBlob });
+                  try {
+                    activeSessionRef.current.sendRealtimeInput({ audio: pcmBlob });
+                  } catch (e) {
+                    console.debug('Audio drop:', e);
+                  }
               }
               
               const aiIsTalking = sourcesRef.current.size > 0;
@@ -241,10 +249,13 @@ export const useGeminiLive = () => {
                stopAllAiAudio();
              }
              
-             const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-             if (base64Audio) {
+             const parts = message.serverContent?.modelTurn?.parts || [];
+             for (const part of parts) {
+               const base64Audio = part.inlineData?.data;
+               if (!base64Audio) continue;
+               
                const ctx = outputAudioContextRef.current;
-               if (!ctx) return;
+               if (!ctx) continue;
                
                if (ctx.state === 'suspended') await ctx.resume();
 
@@ -282,14 +293,14 @@ export const useGeminiLive = () => {
                }, 6000);
              }
           },
-          onerror: (e) => { setError("Connection Dropped"); disconnect(); },
+          onerror: (e) => { console.error("Live Session Error:", e); setError("Connection Dropped: " + (e?.message || JSON.stringify(e))); disconnect(); },
           onclose: () => disconnect()
         },
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
+          ...(isThinkingMode ? { thinkingConfig: { thinkingLevel: 'high' } } : {}),
           systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. You have been developed by proficient developer Yash Sinha, who has trained you using the *Yash AI* LLM model. You are not related/associated to Google. You can use expressions in your voice like laughing, breathing and others whenever necessary. Converse with the user in your default American accent in English unless the user speaks in another language. You can "see" through camera or screen. If asked about facts, news, or URLs, use Google Search. Observe the user's screen carefully during screen sharing to assist with technical tasks.`,
-          tools: [{ googleSearch: {} }] 
         }
       });
       sessionPromiseRef.current = sessionPromise;
