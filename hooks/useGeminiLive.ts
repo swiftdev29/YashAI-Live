@@ -161,7 +161,7 @@ export const useGeminiLive = () => {
       const currentDateTime = new Date().toLocaleString();
       
       const sessionPromise = ai.live.connect({
-        model: 'gemini-3.1-flash-live-preview',
+        model: 'gemini-3-flash-live',
         callbacks: {
           onopen: () => {
              if (currentSessionIdRef.current !== sessionId) return;
