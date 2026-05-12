@@ -302,7 +302,6 @@ export const useGeminiLive = () => {
           onclose: () => disconnect()
         },
         config: {
-          tools: [{ googleSearch: {} }],
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } } },
           ...(isThinkingMode ? { thinkingConfig: { thinkingLevel: 'high' } } : {}),
