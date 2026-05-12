@@ -202,19 +202,24 @@ export const useGeminiLive = () => {
               for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
               const rms = Math.sqrt(sum / inputData.length);
 
-              // Optimization: Use activeSessionRef directly instead of sessionPromise.then()
-              // to avoid creating microtasks per second and promise chains.
+              const aiIsTalking = sourcesRef.current.size > 0;
+              const activeThreshold = aiIsTalking ? 0.04 : 0.01;
+
               if (activeSessionRef.current) {
-                  const pcmBlob = createPcmBlob(inputData);
+                  let dataToSend = inputData;
+                  // If the AI is speaking and the user's microphone RMS doesn't cross the threshold,
+                  // send silence to prevent echo loops (the AI hearing itself and interrupting).
+                  if (aiIsTalking && rms <= activeThreshold) {
+                      dataToSend = new Float32Array(inputData.length);
+                  }
+
+                  const pcmBlob = createPcmBlob(dataToSend);
                   try {
                     activeSessionRef.current.sendRealtimeInput({ audio: pcmBlob });
                   } catch (e) {
                     console.debug('Audio drop:', e);
                   }
               }
-              
-              const aiIsTalking = sourcesRef.current.size > 0;
-              const activeThreshold = aiIsTalking ? 0.04 : 0.01;
 
               if (rms > activeThreshold) {
                 if (volumeGainNodeRef.current) {
@@ -298,7 +303,7 @@ export const useGeminiLive = () => {
         },
         config: {
           responseModalities: [Modality.AUDIO],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Algenib' } } },
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
           ...(isThinkingMode ? { thinkingConfig: { thinkingLevel: 'high' } } : {}),
           systemInstruction: `Current system time: ${currentDateTime}. You are a friendly, humorous voice assistant called *Yash AI*. You have been developed by proficient developer Yash Sinha, who has trained you using the *Yash AI* LLM model. You are not related/associated to Google. You can use expressions in your voice like laughing, breathing and others whenever necessary. Converse with the user in your default American accent in English unless the user speaks in another language. You can "see" through camera or screen. If asked about facts, news, or URLs, use Google Search. Observe the user's screen carefully during screen sharing to assist with technical tasks.`,
         }
